@@ -6,6 +6,7 @@ Prerequisite: Already built the ITI environement.
 Set up the new files and folders on the ITI code base.
 
 '
+cd ..
 cd honest_llama
 mkdir features
 mkdir trained_probes
