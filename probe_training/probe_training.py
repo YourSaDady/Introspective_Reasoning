@@ -14,7 +14,7 @@ import torch.optim as optim
 from tqdm import tqdm
 import argparse
 
-sys.path.append('/h/382/momoka/HKU/honest_llama')
+# sys.path.append('/h/382/momoka/HKU/honest_llama')
 print(f'The current working directory: {os.getcwd()}')
 from probes import Probe
 
