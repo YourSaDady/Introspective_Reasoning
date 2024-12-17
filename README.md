@@ -5,6 +5,7 @@
    - `git clone git@github.com:YourSaDady/Introspective_Reasoning.git`
    - `chmod +x ./Introspective_Reasoning/setup.sh`
    - `./Introspective_Reasoning/setup.sh`
+   - `cd honest_llama`
 ### 1. Set up the ITI environment
   - Follow the installation guide in https://github.com/likenneth/honest_llama
 ### 2. Build classifiers
