@@ -8,7 +8,7 @@ import numpy as np
 import pickle
 import sys
 import time
-sys.path.append('/h/382/momoka/HKU/honest_llama')
+# sys.path.append('/h/382/momoka/HKU/honest_llama')
 # sys.path.append('../')
 
 # import llama
