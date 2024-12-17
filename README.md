@@ -6,6 +6,8 @@
    - `chmod +x ./Introspective_Reasoning/setup.sh`
    - `./Introspective_Reasoning/setup.sh`
    - `cd honest_llama`
+   - `chmod +x ./on-the-fly_probe_training.sh`
+   - `chmod +x ./probes_comparable_training.sh`
 ### 1. Set up the ITI environment
   - Follow the installation guide in https://github.com/likenneth/honest_llama
 ### 2. Build classifiers
