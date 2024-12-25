@@ -16,6 +16,6 @@
   - Train and evaluate classifiers: `./probes_comparable_taining.sh`
 ### 4. Build intervention modules
   - :wrench:
-  - Datasets for training teh intervention module / PEFT is on the HuggingFace: 
+  - Datasets for training the intervention module / PEFT is on the HuggingFace: 
 ### 5. Analysis
   - :wrench:
