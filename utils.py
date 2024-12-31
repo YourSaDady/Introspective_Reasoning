@@ -118,12 +118,17 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
 
     return question, steps, labels
 
-def build_prompt(problem, steps, curr_idx):
+def build_prompt(problem, steps, curr_idx, examples):
     history = ''
     for i, step in enumerate(steps[:curr_idx+1]):
         history += f'<Step {i}>: {step}\n\n'
+
+    #______Define your system prompt and instruction here______
+    sys_prompt = '\nYou are going to solve a math problem step by step\n'
+    instruction = '\nGiven the examples shown previously, solve the following problem by completing the following solution steps: \n'
+    #__________________________________________________________
     
-    return f'<Problem>: {problem}\n\n<Solution Steps>: {history}' # I + O in FactCheckMate
+    return f'{sys_prompt}<Examples>: {examples}\n\n{instruction}<Problem>: {problem}\n\n<Solution Steps>: {history}', f'{sys_prompt}<Examples>: {examples}\n\n{instruction}' # (I + O in FactCheckMate), (the input prefix to be ignored when reading the representations)
 
 def tokenized_tqa(dataset, tokenizer): 
 
@@ -152,7 +157,8 @@ def get_random_seed():
     import time
     return int(time.time() * 1000)
 
-def tokenized_math_shepherd(dataset, tokenizer): #always read 1k original samples in one call
+def tokenized_math_shepherd(dataset, tokenizer, n_shot): #always read 1k original samples in one call
+    prefix_len = 0
     train_prompts = [] #no distinguishment on which sample (all info is in the history)
     train_labels = []
     validate_prompts = []
@@ -162,18 +168,33 @@ def tokenized_math_shepherd(dataset, tokenizer): #always read 1k original sample
     with open(dataset, newline='') as csvfile:
         csvreader = csv.DictReader(csvfile)
         count = 0
+        examples = ""
         for row in csvreader:
             label = row['label']
             question, steps, labels = extract_q_s_l(label)
+
+            # use the first n samples to build the n-shot examples
+            if count < n_shot:
+                q = f'\n\nProblem{count}: {question}\n'
+                s = '\nSolution steps: \n'
+                for i, step in enumerate(steps):
+                    s += f'Step{i}: {step}\n'
+                example = q + s + '\n'
+                examples += example
+                count += 1
+                continue
+
             assert len(steps) == len(labels)
             # if count == 0:
             #     print(f'steps: \n{steps}\nlabels: {labels}')
             for j in range(len(steps)): 
-                prompt = build_prompt(question, steps, j)
+                prompt, prefix = build_prompt(question, steps, j, examples)
                 label = labels[j]
                 # if count == 0:
                 #     print(f'\n======\nsample1\'s prompt(till {j}-th step): \n{prompt}\n\n\nlabel: {label}\n======\n')
                 prompt = tokenizer(prompt, return_tensors= 'pt') #.input_ids #input_ids shape: torch.Size([1, 122])
+                if j == 0: #需要忽视representation的地方
+                    prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.shape[-1]
                 if count < 800: # train set ################
                     train_prompts.append(prompt)
                     train_labels.append(label)
@@ -181,9 +202,68 @@ def tokenized_math_shepherd(dataset, tokenizer): #always read 1k original sample
                     validate_prompts.append(prompt)
                     validate_labels.append(label)
             count += 1###############
+            if count == 10: ##############
+                break######################
+    return prefix_len, train_prompts, train_labels, validate_prompts, validate_labels
+
+def tokenized_math_shepherd_4_intervene(dataset, tokenizer, n_shot): #wrap by samples
+    prefix_len = 0
+    train_prompt_pairs = [] # train_set_size = (80%split_num - n_shot), 2D list: samples[sample_steps[...], ...]
+    validate_prompt_pairs = [] #validate_set_size = (20%split_num)
+    # load data split
+    import csv
+    with open(dataset, newline='') as csvfile:
+        csvreader = csv.DictReader(csvfile)
+        count = 0
+        examples = ""
+        for row in csvreader:
+            label = row['label']
+            question, steps, labels = extract_q_s_l(label)
+
+            # use the first n samples to build the n-shot examples
+            if count < n_shot:
+                q = f'\n\nProblem{count}: {question}\n'
+                s = '\nSolution steps: \n'
+                for i, step in enumerate(steps):
+                    s += f'Step{i}: {step}\n'
+                example = q + s + '\n'
+                examples += example
+                count += 1
+                continue
+
+            assert len(steps) == len(labels)
+            # if count == 0:
+            #     print(f'steps: \n{steps}\nlabels: {labels}')
+            sample = [] # collect all steps for a sample, the unit for uploading
+            for j in range(len(steps)-1): 
+                prompt_curr, prefix = build_prompt(question, steps, j, examples)
+                prompt_lookahead, prefix = build_prompt(question, steps, j+1, examples) #default one step lookahead
+                label = labels[j]
+                # if count == 9 and j == 3:
+                #     print(f'\n======\nsample1\'s prompt_curr(till {j}-th step): \n{prompt_curr}\n======\n')
+                #     print(f'\n======\nsample1\'s prompt_lookahead(till {j}-th step): \n{prompt_lookahead}\n======\n')
+                prompt_curr = tokenizer(prompt_curr, return_tensors= 'pt') #.input_ids #input_ids shape: torch.Size([1, 122])
+                prompt_lookahead = tokenizer(prompt_lookahead, return_tensors= 'pt') 
+                curr_step = f'<Step {j}>: {steps[j]}\n\n'
+                curr_step_len = tokenizer(curr_step, return_tensors='pt').input_ids.shape[-1]
+                if j == 0 and count == n_shot: #需要忽视representation的地方
+                    prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.shape[-1]
+                    print(f'Inside tokenized_math_shepherd_4_intervene: prefix_len = {prefix_len}') #3466
+                sample_dict = {
+                    'curr_step_len':  curr_step_len,
+                    'till_curr_step': prompt_curr,
+                    'lookahead_step': prompt_lookahead,
+                }
+                sample.append(sample_dict)
+            count += 1###############
             # if count == 10: ##############
             #     break######################
-    return train_prompts, train_labels, validate_prompts, validate_labels
+
+            if count < 800: # train set ################
+                train_prompt_pairs.append(sample)
+            else: #validate set
+                validate_prompt_pairs.append(sample)
+    return prefix_len, train_prompt_pairs, validate_prompt_pairs
 
 def tokenized_tqa_gen_end_q(dataset, tokenizer): 
 
@@ -273,6 +353,7 @@ def convert_time(start_t):
     secs = int(spent % 60)
     return [hrs, mins, secs]
 
+from transformers import GenerationConfig
 def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, collectors, prompt, device): # called by each step-wise iteration
     # func_start_t = time.time()
     with torch.no_grad():
@@ -305,7 +386,6 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
             }
         )
         '''
-        from transformers import GenerationConfig
         # pyvene默认不返回第一个input的hidden state，需要将unit location前移一个token位置
         # print(f'prompt.input_ids.shape: {prompt.input_ids.shape}') #torch.Size([1, 92])
         base_unit_location = prompt.input_ids.shape[-1] - 1  # last position
@@ -322,12 +402,12 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
             # early_stopping=True,
             pad_token_id=tokenizer.eos_token_id,
             # output_hidden_states=True,
-            # # output_logits=True,
+            # output_logits=True,
             return_dict_in_generate=True, #return a ModelOutput class
         )
         _, output_dict = collected_model.generate( #unintervened, intervened
             prompt, 
-            unit_locations=None,
+            # unit_locations=None,
             # unit_locations={"sources->base": (None, [[[base_unit_location]]])}, #dim0: hidden_dim? dim1: collector_idx? dim2: token_dim
             intervene_on_prompt=True, #False（default）时，base_unit_location只有=0时有效
             generation_config = gen_config,
@@ -342,10 +422,10 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
     head_wise_hidden_states = []
     '''通过pyvene collector收集指定layer的hidden states'''
     for i, collector in enumerate(collectors): #遍历所有观测的layers (setting是只观测一个)
-        # print(f'collector.states: [{len(collector.states)}]{collector.states[0].shape}') #[50]torch.Size([4096]) #
         # assert len(collector.states) == gen_config.max_new_tokens # expect to collect I+O length (max_new_tokens, the 1st token is input) 
         if collector.collect_state: #true by default
             states_per_gen = torch.stack(collector.states, axis=0)#.cpu().numpy() # (92, 4096) #all heads on each layer by default, stack all token steps (except the first from input)
+            print(f'\nstates_per_gen.shape: {states_per_gen.shape}\n')
             head_wise_hidden_states.append(states_per_gen) #why head_wise? 应该是layer-wise!
         else:
             head_wise_hidden_states.append(None)
@@ -377,6 +457,99 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
     # func_spent = convert_time(func_start_t)
     # print(f'- function call spent: {func_spent[0]}:{func_spent[1]}:{func_spent[2]}, or {time.time() - func_start_t} secs')
     return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states 
+
+def get_curr_step_range(token_list):
+    id_start = 0
+    id_end = len(token_list)
+    start_tokens = {':', '>:'}
+    end_tokens = {'}$', '$.', '.\n\n', '\n\n'}
+    for i, token in enumerate(token_list):
+        if token in start_tokens and id_start == 0:
+            id_start = i + 1
+        elif token in end_tokens and id_end == len(token_list):
+            id_end = i + 1
+    return id_start, id_end
+
+def get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt, device): #generate the hidden states for a single step
+    # func_start_t = time.time()
+    with torch.no_grad():
+        prompt = prompt.to(device)
+        '''method 2: generate():
+        output = (
+            None,
+            {   
+                'sequences': torch.Size([1, 182]), #(input+output)
+                'logits': [60]torch.Size([1, 128256]), #[max_new_tokens](seq_num, vocab_size)
+                'attentions': [60][32]torch.Size([1, 32, 122, 122]), #??
+                'hidden_states': [60][33]torch.Size([1, 1, 4096]), #[max_new_tokens][mlp_layer_num](sequence_num, input_length/1, hidden_size) #tensor第二维只有第一个token是input length, 后续tokens都是1
+                'past_key_values': [32][2]torch.Size([1, 8, 181, 128]),
+            }
+        )
+        '''
+        # pyvene默认不返回第一个input的hidden state，需要将unit location前移一个token位置
+        # print(f'prompt.input_ids.shape: {prompt.input_ids.shape}') #torch.Size([1, 3794])
+        base_unit_location = prompt.input_ids.shape[-1] - 1  # last position
+        intervene_positions = [pos for pos in range(prefix_len, prefix_len+3)] #[a, b, c]
+        gen_config = GenerationConfig(
+            batch_size=4,
+            # penalty_alpha=0.6, 
+            do_sample=True,
+            # top_k=8,
+            # temperature=1.0,
+            # repitition_penalty=1.2,
+            # max_length=5000, #prompt tokens通常4k+
+            max_new_tokens=100, #max_length = len(intp,
+
+            # output_attentions=True,ut_prompt) + max_new_tokens #看看60怎么来的
+            # early_stopping=True,
+            pad_token_id=tokenizer.eos_token_id,
+            output_hidden_states=True,
+            output_logits=True,
+            return_dict_in_generate=True, #return a ModelOutput class
+        )
+        _, output_dict = collected_model.generate( #unintervened, intervened
+            prompt, 
+            unit_locations=None,
+            # unit_locations={"sources->base": (None, [[[base_unit_location]]])}, #dim0: num of collectors? dim1: collector_idx? dim2: token_dim
+            # unit_locations={"base": ([[[0,1,2,3]]])}, # [[a,b,c]] is [3, 1, 4096]
+            intervene_on_prompt=True, #False（default）时，base_unit_location只有=0时有效
+            generation_config = gen_config,
+        )
+
+    '''尝试用原本的generate'''
+    original_hs = output_dict['hidden_states'] # [output_len][layers]Size(1, 1, 4096) 第二维只有第一个对应input的是input_len
+    input_len = original_hs[0][0].shape[1]
+    logits = output_dict['logits'] # output 从 -logits_len开始; Size: [100][1]torch.Size([128256])
+    logits = torch.stack([token[0] for token in logits]) #[100]torch.Size([128256])
+    pred_token_ids = torch.argmax(logits, dim=-1)
+    decoded_list = [tokenizer.decode(token_id, skip_special_tokens=True) for token_id in pred_token_ids.tolist()]
+    step_start, step_end = get_curr_step_range(decoded_list)
+    output = tokenizer.decode(pred_token_ids.tolist(), skip_special_tokens=True)
+    # print(f'\n***\noutput sequence: \n{output}\ndecoded_list list: \n{decoded_list}\n***\n')
+    # print(f'curr_step: {decoded_list[step_start:step_end]}')
+    '''only keep the specified layer's hidden states to reduce storage'''
+    layer_id = 16
+    new_hidden_states = [original_hs[step_id][layer_id].squeeze(0) for step_id in range(len(original_hs))] #interchange the rows and columns and squeeze the sequence_num dimension
+    hidden_states = torch.cat(new_hidden_states, dim=0).squeeze(0) #after reshaped: torch.Size([4223, 4096])
+    # print(f'reshaped hidden_states.shape: {hidden_states.shape}') #torch.Size([3893, 4096])
+    original_hidden_states = hidden_states.detach().cpu().numpy() #convert to numpy
+
+
+    head_wise_hidden_states = []
+    '''通过pyvene collector收集指定layer的hidden states'''
+    for i, collector in enumerate(collectors): #遍历所有观测的layers (setting是只观测一个)
+        if collector.collect_state: #true by default 
+            states_per_gen = torch.stack(collector.states, axis=0)#.cpu().numpy() # (92, 4096) #all heads on each layer by default, stack all token steps (except the first from input)
+            # print(f'states_per_gen.shape[0]: {states_per_gen.shape[0]}') #<= max_new_tokens, eg. 66
+            states_per_gen = states_per_gen[prefix_len:, :]  #remove the unwanted hidden states corresponding to the sys_prompt and n-shots 
+            head_wise_hidden_states.append(states_per_gen) #why head_wise? 应该是layer-wise!
+        else:
+            head_wise_hidden_states.append(None)
+        collector.reset() #清空 states和actions\
+    head_wise_hidden_states = head_wise_hidden_states[0].detach().cpu().numpy()
+
+    return original_hidden_states, head_wise_hidden_states, (input_len+step_start, input_len+step_end)
+
 
 def get_llama_hidden_states(collected_model, collectors, prompt, device):
     with torch.no_grad():
