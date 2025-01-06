@@ -13,7 +13,7 @@ import numpy as np
 import pickle
 import sys
 import time
-# sys.path.append('/h/382/momoka/HKU/honest_llama')
+sys.path.append('/h/382/momoka/HKU/honest_llama')
 # sys.path.append('../')
 
 # import llama
@@ -43,14 +43,21 @@ HF_NAMES = {
     'llama3.1_8b_instruct': "meta-llama/Llama-3.1-8B-Instruct"
 }
 
-'''限制intervention module输入的step hidden states长度为100'''
-def pad(array, fix_len=100):
-    if array.shape[0] > 100: #truncate the step length to be exa
-        array = array[:fix_len, :]
-    pad_len = fix_len - array.shape[0]
-    paddings = np.zeros((pad_len, array.shape[1]))
-    padded_array = np.concatenate((array, paddings), axis=0)
-    return padded_array
+# '''限制intervention module输入的step hidden states长度为100'''
+# def pad(array, fix_len=100):
+#     if array.shape[0] > 100: #truncate the step length to be exa
+#         array = array[:fix_len, :]
+#     pad_len = fix_len - array.shape[0]
+#     paddings = np.zeros((pad_len, array.shape[1]), dtype=torch.float32).to(device)
+#     padded_array = np.concatenate((array, paddings), axis=0)
+#     return padded_array
+
+def convert2JSONserializable(data_dict):
+    for key in data_dict:
+        if key != 'labels':
+            h_list = data_dict[key]
+            for h_id in range(len(h_list)):
+                h_list[h_id] = [float(ele) for ele in h_list[h_id]]
 
 def main(): 
     """
@@ -65,7 +72,7 @@ def main():
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--n_shot', type=int, default=8, help='The number of examples in the Input prompt')
     parser.add_argument('--get_hidden_states', type=bool, default=True, help='get hidden states instead for training the probe') #added
-    parser.add_argument('--split_num', type=int, default=1, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
+    parser.add_argument('--split_num', type=int, default=10, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
     parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
     parser.add_argument('--local_save', type=bool, default=False, help='set True to save locally, otherwise upload to the HF dataset. Default False.')
     parser.add_argument('--device', type=int, default=0)
@@ -143,7 +150,7 @@ def main():
             if not is_validate:
                 save_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_train_set.jsonl'
             else:
-                save_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_validate_set.jsonl'
+                save_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_validation_set.jsonl'
             if not is_validate: #train set
                 print('Now build training set...')
                 split='train'
@@ -155,32 +162,39 @@ def main():
             error_count = 0
             for i, sample  in enumerate(tqdm(all_sample_pairs)): #遍历sample
                 # Upload the training and validation sets in a sample-by-sample base!
+                labels = []
                 h_priors = []
                 h_posteriors = []
                 for step in sample:
+                    label = step['label']
                     prompt_curr = step['till_curr_step']
                     prompt_lookahead = step['lookahead_step']
                     curr_step_len = step['curr_step_len']
                     gen_hs, original_hs, _ = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_curr, device) #specify the layer to reduce storage
-                    hs = gen_hs[-curr_step_len:] #ground truth hidden states
+                    hs = gen_hs[-curr_step_len:].tolist() #ground truth hidden states
                     gen_hs, intervened_hs, curr_step_range = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_lookahead, device)
                     curr_start = curr_step_range[0]
                     curr_end = curr_step_range[1]
-                    hs_prime = gen_hs[curr_step_range[0]:curr_step_range[1]]
-                    padded_hs = pad(hs)
-                    padded_hs_prime = pad(hs_prime)
+                    hs_prime = gen_hs[curr_step_range[0]:curr_step_range[1]].tolist()
+                    # padded_hs = pad(hs)
+                    # padded_hs_prime = pad(hs_prime)
+
                     # if i == 0:    
                     #     print(f'original_hs shape: {original_hs.shape}, intervened_hs shape: {intervened_hs.shape}') # 
                     #     print(f'hs shape: {hs.shape}, hs_prime shape: {hs_prime.shape}') 
                     #     print(f'after padding, hs shape: {padded_hs.shape}, hs_prime shape: {padded_hs_prime.shape}')
                     #     # print(f'collector_hs shape: {collector_hs.shape}') # (65, 4096)
-                    h_priors.append(hs)
-                    h_posteriors.append(hs_prime)
+                    h_priors.append(hs_prime)
+                    h_posteriors.append(hs)
+                    labels.append(label)
                     # if i == 4:
                     #     break#################
+                if i == 0:
+                    print(f'\n\nlabels: {labels}\n\n')
                 sample_dict = {
                     'h_prior': h_priors,
                     'h_posterior': h_posteriors,
+                    'labels': labels
                 }
                 if h_priors == [] or h_posteriors == []:
                     print('\n!!!\nError: h_priors or h_posteriors is empty!! Skip.\n!!!\n')
@@ -188,29 +202,32 @@ def main():
                     continue
                 sample_data = Dataset.from_dict(sample_dict)
                 if not args.local_save:
-                    sample_data.push_to_hub('Lo-Fi-gahara/math-shepherd_llama3.1-8b-instruct_intervene', split=split, max_shard_size="1GB", data_dir=f'{dir_name}sample{i}') #upload a single sample to HF
-                else:
+                    sample_data.push_to_hub(f'Lo-Fi-gahara/intervene_{args.split_num}k', split=split, max_shard_size="1GB", data_dir=f'{dir_name}sample{i}') #upload a single sample to HF
+                else: ###################
+                    # convert2JSONserializable(sample_dict)
                     all_samples.append(sample_dict)
 
                 # if i == 10:
                 #     break #####################
-            # if args.local_save:
-            with open(save_path, 'w') as f:
-                for sample in all_samples:
-                    json.dump(sample, f)
-                    f.write('\n')
-            print(f'\nDataset saved to {save_path}\n')
 
+
+
+            if args.local_save:###################
+                with open(save_path, 'w') as f:
+                    for sample in all_samples:
+                        json.dump(sample, f)
+                        f.write('\n')
+                print(f'\nDataset saved to {save_path}\n')
+            else: #########################
+                print(f'Dataset uploaded to HF.\n')
             print(f'Total error encountered: {error_count}')
-            # else:
-            #     print(f'Dataset uploaded to HF.\n')
 
         spent = time.time() - start_t
         hrs = int(spent // 3600)
         spent %= 3600
         mins = int(spent // 60)
         secs = int(spent % 60)
-        print(f'\n***\nTotal time spent on converting 20 samples: {hrs}:{mins}:{secs}\n***\n')
+        print(f'\n***\nTotal time spent on converting 1k samples: {hrs}:{mins}:{secs}\n***\n')
 
         
     else:

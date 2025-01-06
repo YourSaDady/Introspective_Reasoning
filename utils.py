@@ -77,6 +77,21 @@ def format_truthfulqa(question, choice):
 def format_truthfulqa_end_q(question, choice, rand_question): 
     return f"Q: {question} A: {choice} Q: {rand_question}"
 
+def extract_a(text, src='label'): #can be integer or any form of non-integer!
+    if src == 'label':
+        prefix = 'The answer is: '
+        suffix = ' +-\n'
+    elif src == 'generated':
+        prefix = 'boxed{'
+        suffix = ' }$'
+    start_index = text.find(prefix)
+    if start_index == -1:
+        answer = None
+    else:
+        start_index += len(prefix)
+        answer = text[start_index:].rstrip(suffix)
+    return answer
+
 def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
     import re
     # print(f'text: {text}')
@@ -94,6 +109,7 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
         steps = solution.split('\n')
         steps = [step.strip(' #.') for step in steps] # clean the steps
         steps = [re.sub(f'^{step_prefix}', '', step) for step in steps]
+        steps = [step.rstrip(' -+') for step in steps]
     except:
         steps = ['']
     labels = []
@@ -124,11 +140,19 @@ def build_prompt(problem, steps, curr_idx, examples):
         history += f'<Step {i}>: {step}\n\n'
 
     #______Define your system prompt and instruction here______
-    sys_prompt = '\nYou are going to solve a math problem step by step\n'
-    instruction = '\nGiven the examples shown previously, solve the following problem by completing the following solution steps: \n'
+    sys_prompt = '\nYou are going to solve a math problem step by step. Some examples are given: \n'
+    instruction = '\nGiven the examples above, solve the following problem by completing the solution steps below: \n'
     #__________________________________________________________
     
     return f'{sys_prompt}<Examples>: {examples}\n\n{instruction}<Problem>: {problem}\n\n<Solution Steps>: {history}', f'{sys_prompt}<Examples>: {examples}\n\n{instruction}' # (I + O in FactCheckMate), (the input prefix to be ignored when reading the representations)
+
+def build_prompt_eval(sys_prompt, instruction, question, examples): 
+    history = ''
+    for i, step in enumerate(past_steps):
+        history += f'<Step {i}>: {step}\n\n'
+    history += f'<Step {len(past_steps)}>: \n...'
+    #return prefix (sys_prompt + examples + instruction) and probing_input (problem + partial_sol_steps)
+    return f'<Problem>: {question}\n\n<Solution Steps>: {history}'
 
 def tokenized_tqa(dataset, tokenizer): 
 
@@ -156,6 +180,54 @@ def tokenized_tqa(dataset, tokenizer):
 def get_random_seed():
     import time
     return int(time.time() * 1000)
+
+def eval_math_shepherd(csv_path, tokenizer, n_shot, eval_size=200):
+    '''
+    Return tokenized n-shot prompt and answer for each sample question
+    '''
+    # load data split
+    import csv
+    dataset = []
+    prefix = ''
+    prefix_len = 0
+    with open(csv_path, newline='') as csvfile:
+        csvreader = csv.DictReader(csvfile)
+        count = 0
+        examples = ""
+        for row in csvreader:
+            label = row['label']
+            question, steps, _ = extract_q_s_l(label)
+            answer = extract_a(label)
+            # if count == 0:
+            #     print(f'\n- question: {question}\n- answer: {answer}\n')
+
+            # use the first n samples to build the n-shot examples
+            if count < n_shot:
+                q = f'\n\nProblem{count}: {question}\n'
+                s = '\nSolution steps: \n'
+                for i, step in enumerate(steps):
+                    s += f'Step{i}: {step}\n'
+                example = q + s + '\n'
+                examples += example
+                count += 1
+                continue
+            if count == n_shot: # build prefix for once
+                #______Define your system prompt and instruction here______
+                sys_prompt = '\nYou are going to solve a math problem step by step. Some examples are given: \n'
+                instruction = '\nGiven the examples above, solve the following problem by completing the solution steps below: \n'
+                #__________________________________________________________
+                prefix = f'{sys_prompt}<Examples>: {examples}\n\n{instruction}'
+                prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.size(-1)
+
+            partial_probing_input = f'<Problem>: {question}\n\n<Solution Steps>: ' #这里构建dataset时还未知past steps, 因此probing input是partial的
+            partial_prompt = prefix + partial_probing_input #partial!
+            q_a = {'question': partial_prompt, 'answer': answer}
+            dataset.append(q_a)
+            count += 1
+            # if count == eval_size:
+            if count == 9: ##############test
+                break######################
+    return dataset, prefix_len
 
 def tokenized_math_shepherd(dataset, tokenizer, n_shot): #always read 1k original samples in one call
     prefix_len = 0
@@ -250,6 +322,7 @@ def tokenized_math_shepherd_4_intervene(dataset, tokenizer, n_shot): #wrap by sa
                     prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.shape[-1]
                     print(f'Inside tokenized_math_shepherd_4_intervene: prefix_len = {prefix_len}') #3466
                 sample_dict = {
+                    'label': label,
                     'curr_step_len':  curr_step_len,
                     'till_curr_step': prompt_curr,
                     'lookahead_step': prompt_lookahead,
@@ -407,7 +480,7 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
         )
         _, output_dict = collected_model.generate( #unintervened, intervened
             prompt, 
-            # unit_locations=None,
+            unit_locations=None,
             # unit_locations={"sources->base": (None, [[[base_unit_location]]])}, #dim0: hidden_dim? dim1: collector_idx? dim2: token_dim
             intervene_on_prompt=True, #False（default）时，base_unit_location只有=0时有效
             generation_config = gen_config,
@@ -550,6 +623,101 @@ def get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_le
 
     return original_hidden_states, head_wise_hidden_states, (input_len+step_start, input_len+step_end)
 
+def decode_step_ans(tokenizer, logits): #input: [100][1]torch.Size([128256])
+    logits = torch.stack([token[0] for token in logits]) #[100]torch.Size([128256])
+    pred_token_ids = torch.argmax(logits, dim=-1)
+    decoded_list = [tokenizer.decode(token_id, skip_special_tokens=True) for token_id in pred_token_ids.tolist()]
+    step_start, step_end = get_curr_step_range(decoded_list)
+    output = tokenizer.decode(pred_token_ids.tolist(), skip_special_tokens=True)
+    step = tokenizer.decode(pred_token_ids.tolist()[step_start:step_end], skip_special_tokens=True)
+    ans = extract_a(output) # src='generated'
+    return step, ans
+
+def complete_prompt(tokenizer, prompt, past_steps): #return tokenized full_prompt
+    history = '\n'
+    for i, step in enumerate(past_steps):
+        history += f'<Step {i}>: {step}\n\n'
+    history += f'<Step {len(past_steps)}>: \n...'
+    #return prefix (sys_prompt + examples + instruction) and probing_input (problem + partial_sol_steps)
+    full_prompt = prompt + history
+    if past_steps == []: ############
+        print(f'\n___full prompt___\n{full_prompt[:666]}\n\n...\n\n{full_prompt[-666:]}\n______________\n') ############
+    return tokenizer(full_prompt, return_tensors='pt')
+
+def gen_steps_ans(tokenizer, pv_model, model, prompt, max_step_num, compare_baseline=False, device='cuda'):
+    '''
+    generate solution to the final answer step by step.
+    for each step: 
+        - complete prompt with past steps
+        - generates with original and pyvene models
+        - get decoded steps (original and intervened)
+    '''
+    pv_model.set_device(device) #classifier和intervener应该也放到device了？
+    if compare_baseline:
+        model.to(device) 
+
+    gen_config = GenerationConfig(
+        batch_size=4,
+        do_sample=True,
+        # top_k=8,
+        # temperature=1.0,
+        # repitition_penalty=1.2,
+        max_new_tokens=100, 
+        # early_stopping=True,
+        pad_token_id=tokenizer.eos_token_id,
+        output_hidden_states=True,
+        output_logits=True,
+        return_dict_in_generate=True, #return a ModelOutput class
+    )
+
+    with torch.no_grad():
+        # prompt = prompt.to(device)
+        pv_steps = []
+        pv_ans = None
+        org_steps = []
+        org_ans = None
+        for step_idx in range(max_step_num):
+            if pv_ans or org_ans:
+                break
+            pv_prompt = complete_prompt(tokenizer, prompt, pv_steps) #complete the full_prompt with the past steps and tokenize
+            pv_prompt = pv_prompt.to(device)
+            pv_start_t = time.time()
+            _, pv_output_dict = pv_model.generate(
+                pv_prompt, 
+                generation_config = gen_config,
+                unit_locations=None,      # set to None means intervention will be applied for each forward call
+                intervene_on_prompt=True, # intervention will be called for the prompt kv cache call
+                subspaces=[{"logging": False}], # other metadata
+            )
+            pv_spent = convert_time(pv_start_t)
+            print(f'        - Time spent on pv_model generation: {pv_spent[0]}:{pv_spent[1]}:{pv_spent[2]}, or {(time.time() - pv_start_t):.5f} secs')
+            pv_step, pv_ans = decode_step_ans(tokenizer, pv_output_dict['logits']) 
+            pv_steps.append(pv_step)
+
+            if compare_baseline:
+                org_prompt = complete_prompt(tokenizer, prompt, org_steps)
+                org_prompt = org_prompt.to(device)
+                org_start_t = time.time()
+                org_output_dict = model.generate(
+                    org_prompt['input_ids'], 
+                    gen_config
+                )
+                org_spent = convert_time(org_start_t)
+                print(f'        - Time spent on org_model generation: {org_spent[0]}:{org_spent[1]}:{org_spent[2]}, or {(time.time() - org_start_t):.5f} secs')
+                org_step, org_ans = decode_step_ans(tokenizer, org_output_dict.logits) 
+                org_steps.append(org_step)
+
+            # break ###########test
+ 
+    # end of no_grad()
+    pv_sol = ''
+    for i, step in enumerate(pv_steps):
+        pv_sol += f'<Step {i}>: {step}\n'
+    org_sol = ''
+    for i, step in enumerate(org_steps):
+        org_sol += f'<Step {i}>: {step}\n'
+
+    return pv_sol, pv_ans, org_sol, org_ans
 
 def get_llama_hidden_states(collected_model, collectors, prompt, device):
     with torch.no_grad():

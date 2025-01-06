@@ -3,7 +3,37 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-class Probe():
+class InterventionModule(nn.Module):
+    '''
+    input: padded hs_prime (original current step)
+    output: padded hs (intervened step)
+    '''
+    def __init__(self, type, depth=1, input_size=4096, hidden_size=128, output_size=4096):
+        super(InterventionModule, self).__init__()
+        self.type = type
+        self.depth = depth
+        self.input_size = input_size
+        self.output_size = output_size
+        if self.type == 'lstm':
+            self.hidden_size = hidden_size
+            self.lstm = nn.LSTM(self.input_size, self.hidden_size, num_layers=self.depth, batch_first=True).to('cuda')
+            self.fc = nn.Linear(hidden_size, output_size).to('cuda')
+            self.params = self.parameters()
+        else:
+            raise NotImplementedError("The probe type {type} is not defined!")
+
+    def forward(self, input_h):
+        if self.type == 'lstm': # not aggregate input, but aggregate output (I+O length, 1)
+            input_h = input_h.to(torch.float32).to('cuda')
+            h0 = torch.zeros(self.depth, input_h.size(0), self.hidden_size, dtype=torch.float32).to('cuda')
+            c0 = torch.zeros(self.depth, input_h.size(0), self.hidden_size, dtype=torch.float32).to('cuda')
+            # print(f'input_h.shape: {input_h.shape}') #逐渐递增 I -> I+O
+            out, _ = self.lstm(input_h, (h0, c0))
+            out = self.fc(out)
+
+        return out
+
+class Classifier():
     '''
     input: tensor(I+O length, hidden_size)
     output: bool (factual / not)
@@ -18,8 +48,8 @@ class Probe():
     output_size = 1 #binary classification by default
     params = None
 
-    def __init__(self, type, hidden_size, output_size, aggregate_method):
-        super(Probe, self).__init__()
+    def __init__(self, type, hidden_size, output_size, aggregate_method='bow'):
+        super(Classifier, self).__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.type = type
@@ -51,10 +81,17 @@ class Probe():
             self.params = list(self.probe.parameters()) #lstm has no self.attn
 
     def forward(self, input_h):
+        self.probe.to('cuda')
         if self.type == 'lstm': # not aggregate input, but aggregate output (I+O length, 1)
             self.probe.flatten_parameters()
-            input = input_h.view(input_h.shape[0], 1, -1) # reshape (I+O length, hidden_dim) to (I+O length, 1, hidden_dim)
-            h_c = (torch.randn(self.lstm_layer_num, 1, self.output_size).to('cuda'), torch.randn(self.lstm_layer_num, 1, self.output_size).to('cuda')) #[2]Size(2, 1, 1)
+            input = input_h.view(input_h.shape[0], 1, -1).to(torch.float32).to('cuda') # reshape (I+O length, hidden_dim) to (I+O length, 1, hidden_dim)
+            h_c = (
+                torch.randn(self.lstm_layer_num, 1, self.output_size, dtype=torch.float32).to('cuda'), 
+                torch.randn(self.lstm_layer_num, 1, self.output_size, dtype=torch.float32).to('cuda')
+            ) #[2]Size(2, 1, 1)
+            # print(f"Model device: {next(self.probe.parameters()).device}")
+            # print(f"Input tensor device: {input.device}")
+            # print(f"Label tensor device: {h_c[0].device}, {h_c[1].device}")
             out, h_c = self.probe(input, h_c) # #out: Size(I+O_length, 1, output_size), h_c: Size: [2](layer_num, 1, output_size)
             # print(f'out: {out}\nh_c.shape: {h_c}')
             assert torch.allclose(out[-1], h_c[0][-1]) #last output is the same as the last hidden state, both of shape tensor(1,2)

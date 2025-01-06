@@ -49,6 +49,7 @@ def main():
     parser.add_argument('--model_name', type=str, default='llama3.1_8b_instruct')
     parser.add_argument('--model_prefix', type=str, default='', help='prefix of model name')
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
+    parser.add_argument('--n_shot', type=int, default=8, help='number of examples given in the Input. Represeantions are ignored during classifying and intervention')
     parser.add_argument('--get_hidden_states', type=bool, default=True, help='get hidden states instead for training the probe') #added
     parser.add_argument('--split_num', type=int, default=1, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
     parser.add_argument('--layer', type=int, default=15, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
@@ -83,7 +84,8 @@ def main():
         with open(f'./features/{args.model_name}_{args.dataset_name}_categories.pkl', 'wb') as f:
             pickle.dump(categories, f)
     else:  #TODO:下面的variable会很大
-        train_prompts, train_labels, validate_prompts, validate_labels = formatter(dataset, tokenizer) # for math-shepherd, prompt = I+O (problem + steps so-far), already tokenized; label is binary
+        #prefix_len是interpret representations时需要忽视的Input部分（sys_prmompt和n-shots部分) 的token长度
+        prefix_len, train_prompts, train_labels, validate_prompts, validate_labels = formatter(dataset, tokenizer,args.n_shot) # for math-shepherd, prompt = I+O (problem + steps so-far), already tokenized; label is binary
         assert (len(train_prompts) == len(train_labels)) and (len(validate_prompts) == len(validate_labels))
         print(f'The number of total steps in the training set: {len(train_prompts)}\nThe number of total steps in the validation set: {len(validate_prompts)}') #34467 (5k samples, ~7 steps per sample)
 

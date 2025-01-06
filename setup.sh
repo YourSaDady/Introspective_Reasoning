@@ -5,7 +5,7 @@
 
 # Set up the new files and folders on the ITI code base.
 
-
+mkdir ./honest_llama/evaluate
 mkdir ./honest_llama/features
 mkdir ./honest_llama/trained_probes
 cp "./Introspective_Reasoning/get_activations/get_activations.py" "./honest_llama/get_activations/get_activations.py"
@@ -17,3 +17,5 @@ cp "./Introspective_Reasoning/utils.py" "./honest_llama/utils.py"
 mv "./Introspective_Reasoning/on-the-fly_probe_training.sh" "./honest_llama/"
 mv "./Introspective_Reasoning/probes_comparable_training.sh" "./honest_llama/"
 mv "./Introspective_Reasoning/trained_probes/layer3_lstm_llama3.1_8b_instruct_16_math_shepherd_2k_best84.json" "./honest_llama/trained_probes/"
+mv "./Introspective_Reasoning/trained_probes/interventor_lstm_10k_classify-True.pth" "./honest_llama/trained_probes/"
+mv "./Introspective_Reasoning/evaluate/evaluate.py" "./honest_llama/evaluate/"

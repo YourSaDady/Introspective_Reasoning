@@ -1,7 +1,7 @@
 from datasets import load_dataset
 import sys
 
-sys.path.append('../')
+# sys.path.append('../') 
 
 # Load the dataset
 dataset = load_dataset('peiyi9979/Math-Shepherd')['train']
@@ -19,4 +19,4 @@ for i in range(10):
     split_data = sampled_dataset.select(range(i * split_size, (i + 1) * split_size))
     
     # Save the split dataset locally as a CSV file or any other format
-    split_data.to_csv(f'../features/MATH-Shepherd_part_{i+1}.csv')
+    split_data.to_csv(f'./features/MATH-Shepherd_part_{i+1}.csv') #pwd is honest_llama
