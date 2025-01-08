@@ -109,7 +109,6 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
         steps = solution.split('\n')
         steps = [step.strip(' #.') for step in steps] # clean the steps
         steps = [re.sub(f'^{step_prefix}', '', step) for step in steps]
-        steps = [step.rstrip(' -+') for step in steps]
     except:
         steps = ['']
     labels = []
@@ -119,6 +118,7 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
             labels.append('+')
         elif step.endswith('-'):
             labels.append('-')
+        step.rstrip(' -+')
     # Note: the last step containing "The answer is: ..." always has '-' label
     labels.append('-')
 
