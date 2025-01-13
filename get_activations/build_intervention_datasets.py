@@ -22,7 +22,7 @@ import argparse
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 
 # Specific pyvene imports
-from utils import get_llama_step_reps_pyvene, tokenized_math_shepherd_4_intervene
+from utils import get_llama_step_reps_pyvene, tokenized_math_shepherd_4_intervene, tokenized_dpo_4_intervene
 from interveners import wrapper, Collector
 import pyvene as pv
 
@@ -52,12 +52,12 @@ HF_NAMES = {
 #     padded_array = np.concatenate((array, paddings), axis=0)
 #     return padded_array
 
-def convert2JSONserializable(data_dict):
-    for key in data_dict:
-        if key != 'labels':
-            h_list = data_dict[key]
-            for h_id in range(len(h_list)):
-                h_list[h_id] = [float(ele) for ele in h_list[h_id]]
+# def convert2JSONserializable(data_dict):
+#     for key in data_dict:
+#         if key != 'labels':
+#             h_list = data_dict[key]
+#             for h_id in range(len(h_list)):
+#                 h_list[h_id] = [float(ele) for ele in h_list[h_id]]
 
 def main(): 
     """
@@ -72,7 +72,7 @@ def main():
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--n_shot', type=int, default=8, help='The number of examples in the Input prompt')
     parser.add_argument('--get_hidden_states', type=bool, default=True, help='get hidden states instead for training the probe') #added
-    parser.add_argument('--split_num', type=int, default=10, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
+    parser.add_argument('--split_num', type=int, default=5, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
     parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
     parser.add_argument('--local_save', type=bool, default=False, help='set True to save locally, otherwise upload to the HF dataset. Default False.')
     parser.add_argument('--device', type=int, default=0)
@@ -91,6 +91,10 @@ def main():
         # dataset = load_dataset("peiyi9979/Math-Shepherd")["train"]# [args.start_sample_idx:args.end_sample_idx] 太大了！
         dataset = f'./features/MATH-Shepherd_part_{args.split_num}.csv'
         formatter = tokenized_math_shepherd_4_intervene
+    elif args.dataset_name == 'dpo':
+        print('\nHERE!!!!\n') #################
+        dataset = f'./features/241127-1.json'
+        formatter = tokenized_dpo_4_intervene
     else: 
         raise ValueError("Invalid dataset name")
 
@@ -166,24 +170,37 @@ def main():
                 h_priors = []
                 h_posteriors = []
                 for step in sample:
-                    label = step['label']
-                    prompt_curr = step['till_curr_step']
-                    prompt_lookahead = step['lookahead_step']
-                    curr_step_len = step['curr_step_len']
-                    gen_hs, original_hs, _ = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_curr, device) #specify the layer to reduce storage
-                    hs = gen_hs[-curr_step_len:].tolist() #ground truth hidden states
-                    gen_hs, intervened_hs, curr_step_range = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_lookahead, device)
-                    curr_start = curr_step_range[0]
-                    curr_end = curr_step_range[1]
-                    hs_prime = gen_hs[curr_step_range[0]:curr_step_range[1]].tolist()
+                    if args.dataset_name == 'math_shepherd':
+                        label = step['label']
+                        prompt_curr = step['till_curr_step']
+                        prompt_lookahead = step['lookahead_step']
+                        curr_step_len = step['curr_step_len']
+                    elif args.dataset_name == 'dpo':
+                        label = None
+                        prompt_curr = step['chosen_prompt_curr']
+                        post_step_len = step['chosen_step_len']
+                        prompt_lookahead = step['rejected_prompt_curr']
+                        pre_step_len = step['rejected_step_len']
+
+
+                    gen_hs_1, original_hs, _, input_len = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_curr, device)
+                    gen_hs_2, intervened_hs, curr_step_range, input_len = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_lookahead, device)
+                    
+                    if args.dataset_name == 'math_shepherd':
+                        hs = gen_hs_1[-curr_step_len:].tolist() #ground truth hidden states
+                        hs_prime = gen_hs_2[curr_step_range[0]:curr_step_range[1]].tolist()
+                    elif args.dataset_name == 'dpo':
+                        hs = gen_hs_1[input_len-post_step_len:input_len]
+                        hs_prime = gen_hs_2[input_len-pre_step_len:input_len]
                     # padded_hs = pad(hs)
                     # padded_hs_prime = pad(hs_prime)
-
-                    # if i == 0:    
-                    #     print(f'original_hs shape: {original_hs.shape}, intervened_hs shape: {intervened_hs.shape}') # 
-                    #     print(f'hs shape: {hs.shape}, hs_prime shape: {hs_prime.shape}') 
-                    #     print(f'after padding, hs shape: {padded_hs.shape}, hs_prime shape: {padded_hs_prime.shape}')
-                    #     # print(f'collector_hs shape: {collector_hs.shape}') # (65, 4096)
+                        if i == 0:    
+                            print(f'gen_hs_1 shape: {gen_hs_1.shape}, gen_hs_2 shape: {gen_hs_2.shape}') # 
+                            print(f'hs shape: {hs.shape}, hs_prime shape: {hs_prime.shape}') 
+                        hs = hs.tolist()
+                        hs_prime = hs_prime.tolist()
+                        # print(f'after padding, hs shape: {padded_hs.shape}, hs_prime shape: {padded_hs_prime.shape}')
+                        # print(f'collector_hs shape: {collector_hs.shape}') # (65, 4096)
                     h_priors.append(hs_prime)
                     h_posteriors.append(hs)
                     labels.append(label)
@@ -202,13 +219,17 @@ def main():
                     continue
                 sample_data = Dataset.from_dict(sample_dict)
                 if not args.local_save:
-                    sample_data.push_to_hub(f'Lo-Fi-gahara/intervene_{args.split_num}k', split=split, max_shard_size="1GB", data_dir=f'{dir_name}sample{i}') #upload a single sample to HF
+                    if args.dataset_name == 'math_shepherd':
+                        sample_data.push_to_hub(f'Lo-Fi-gahara/intervene_{args.split_num}k', split=split, max_shard_size="1GB", data_dir=f'{dir_name}sample{i}') #upload a single sample to HF
+                    elif args.dataset_name == 'dpo':
+                        print(f'pushing sample {i} to the HF Hub...')
+                        sample_data.push_to_pub(f'Lo-Fi-gahara/intervene_dpo')
                 else: ###################
                     # convert2JSONserializable(sample_dict)
                     all_samples.append(sample_dict)
 
-                # if i == 10:
-                #     break #####################
+                if i == 10:
+                    break #####################
 
 
 

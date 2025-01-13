@@ -16,33 +16,33 @@ from tqdm import tqdm
 import argparse
 from datasets import Dataset, load_dataset
 
-# sys.path.append('/h/382/momoka/HKU/honest_llama')
+sys.path.append('/h/382/momoka/HKU/honest_llama')
 print(f'The current working directory: {os.getcwd()}')
 from probes import Classifier, InterventionModule
 
-def load_HF_data_split(split_num):
-    src_path = f'Lo-Fi-gahara/intervene_{split_num}k'
-    divs = {'train': 791, 'validation': 201}
-    train_set = []
-    validate_set = []
-    for div in divs:
-        print(f'Now loading on div: {div}...')
-        if div == 'train':
-            path_prefix = 'train/'
-        else:
-            path_prefix = 'validatation/'
-        for i in tqdm(range(divs[div])):
-            data_path = path_prefix + f'sample{i}/{div}-00000-of-00001.parquet'
-            dataset = load_dataset(src_path, split=div, data_dir=f'{path_prefix}sample{i}')
-            if div == 'train':
-                train_set.append(dataset)
-            else:
-                validate_set.append(dataset)
-            if i == 10: ##########
-                break ##########
+# def load_HF_data_split(split_num): #TODO: load from remote HF hub, stil got errors
+#     src_path = f'Lo-Fi-gahara/intervene_{split_num}k'
+#     divs = {'train': 791, 'validation': 201}
+#     train_set = []
+#     validate_set = []
+#     for div in divs:
+#         print(f'Now loading on div: {div}...')
+#         if div == 'train':
+#             path_prefix = 'train/'
+#         else:
+#             path_prefix = 'validatation/'
+#         for i in tqdm(range(divs[div])):
+#             data_path = path_prefix + f'sample{i}/{div}-00000-of-00001.parquet'
+#             dataset = load_dataset(src_path, split=div, data_dir=f'{path_prefix}sample{i}')
+#             if div == 'train':
+#                 train_set.append(dataset)
+#             else:
+#                 validate_set.append(dataset)
+#             if i == 10: ##########
+#                 break ##########
 
-    print(f'train_set[0]: {train_set[0]}, validate_set[0]: {validate_set[0]}')
-    return train_set, validate_set
+#     print(f'train_set[0]: {train_set[0]}, validate_set[0]: {validate_set[0]}')
+#     return train_set, validate_set
 
 '''限制intervention module输入的step hidden states长度为100'''
 def pad(array, fix_len=100):
@@ -60,14 +60,20 @@ def pad(array, fix_len=100):
 def build_data_loaders(train_path, validate_path, device, classify=False):
     train_set = []
     validate_set = []
+    count = 0
+    sample_count = 0
+    empty_sample_count = 0
+    pos_count = 0
+    neg_count = 0
     for is_validate, path in enumerate([train_path, validate_path]):
-        # if not is_validate: ############
-        #     continue ############
-        count = 0
-        sample_count = 0
-        empty_sample_count = 0
+        if is_validate: ############
+            continue ############
+        if is_validate: 
+            print('Now loading validation set')
+        else:
+            print('Now loading training set')
         with open(path, 'r') as f:
-            for line in tqdm(f):
+            for line in tqdm(f): #iter samples
                 count += 1
                 # if count == 10: ############ for testing only
                 #     break##########
@@ -75,8 +81,9 @@ def build_data_loaders(train_path, validate_path, device, classify=False):
                 all_hs = list(json_obj.get('h_posterior'))
                 all_hs_primes = list(json_obj.get('h_prior'))
                 all_labels = list(json_obj.get('labels'))
+                # print(f'len(all_hs_primes): {len(all_hs_primes)}') #show steps num
                 assert len(all_hs_primes) == len(all_hs) == len(all_labels)
-                for hs, hs_prime, label in zip(all_hs, all_hs_primes, all_labels):
+                for hs, hs_prime, label in zip(all_hs, all_hs_primes, all_labels): #iter steps
                     sample_count += 1
                     hs = pad(torch.tensor(hs, dtype=torch.float32)).to(device)
                     hs_prime = pad(torch.tensor(hs_prime, dtype=torch.float32)).to(device)
@@ -89,18 +96,22 @@ def build_data_loaders(train_path, validate_path, device, classify=False):
                     # label_bool = 1 if label == '+' else 0
                     # label = torch.tensor([label_bool], dtype=torch.float32).to(device) #batch_size = 1
 
-                    # if count == 1: ############hs: torch.Size([52, 4096]), hs_prime: torch.Size([31, 4096]), label: tensor([1.], device='cuda:0')
-                    #     print(f'hs shape: {hs.shape}, hs_prime shape: {hs_prime.shape}, label: {label}') ############
-                    if (classify and label == '+') or not classify: #只保留positive classification label的samples用于训练
+                    if sample_count == 1: ############hs: torch.Size([100, 4096]), hs_prime: torch.Size([100, 4096]), label: '-'
+                        print(f'hs: {hs}, hs_prime: {hs_prime}, label: {label}') ############
+                        print(f'hs shape: {hs.shape}, hs_prime shape: {hs_prime.shape}, label: {label}') ############
+                    if (classify and label == '+') or (not classify): #只保留positive classification label的samples用于训练
+                        pos_count += 1
                         h_h = {'hs': hs, 'hs_prime': hs_prime} # torch.Size([100, 4096]), 1 or 0
                         if not is_validate: #train_set
                             train_set.append(h_h)
                         else:
                             validate_set.append(h_h)
                     elif classify and label == '-':
+                        neg_count += 1
                         continue
     
-    print(f'Loaded train set of size (pos: {len(train_set)} / total: {sample_count - empty_sample_count}) ({empty_sample_count} failed) and validate set of size ({len(validate_set)})')
+    print(f'Loaded train set of size (pos: {len(train_set)}+{len(validate_set)} / total: {sample_count - empty_sample_count}) ({empty_sample_count} empty)')
+    print(f'pos: {pos_count}, neg: {neg_count}')
     train_loader = DataLoader(train_set, batch_size=4, shuffle=False)
     validate_loader = DataLoader(validate_set, batch_size=4, shuffle=False)
 
@@ -123,6 +134,7 @@ def main():
     parser.add_argument('--probe_type', type=str, default='classifier', help='Available probe types: [\'classifier\', \'intervention_module\']')
     parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
     parser.add_argument('--positive_samples_only', type=bool, default=True, help='Valid when probe_type == "intervention_module". Whether to train on positive-labeled samples only')
+    parser.add_argument('--test', type=bool, default=False, help='to be deleted (relate to save path)') ############
     args = parser.parse_args()
 
     '''
@@ -156,11 +168,11 @@ def main():
                     else:
                         validate_set.append(h_l)
         print(f'Loaded train set of size ({len(train_set)}) and validate set of size ({len(validate_set)})')
-    elif args.probe_type == 'intervention_module' and not args.load_from_local:
-        print(f'\n***\nnow start loading classifier datasets with split ({args.split_num}) for layer ({args.layer}) from HF...\n***\n')
-        train_set, validate_set = load_HF_data_split(args.split_num)
+    # elif args.probe_type == 'intervention_module' and not args.load_from_local:
+    #     print(f'\n***\nnow start loading classifier datasets with split ({args.split_num}) for layer ({args.layer}) from HF...\n***\n')
+    #     train_set, validate_set = load_HF_data_split(args.split_num)
     elif args.probe_type == 'intervention_module' and args.load_from_local:
-        print(f'\n***\nnow start loading classifier datasets with split ({args.split_num}) for layer ({args.layer}) from local...\n***\n')
+        print(f'\n***\nnow start loading intervener datasets with split ({args.split_num}) for layer ({args.layer}) from local...\n***\n')
         train_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_train_set.jsonl'
         validate_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_validation_set.jsonl'
         train_loader, validate_loader, train_size, validate_size = build_data_loaders(train_path, validate_path, device, classify=args.positive_samples_only)
@@ -179,8 +191,12 @@ def main():
     for type in all_probe_type:
         for aggregate in all_aggregate_method:
             if args.probe_type == 'intervention_module' and type == 'lstm':
-                save_path = f'./trained_probes/interventor_lstm_{args.split_num}k_classify-{args.positive_samples_only}.pth'
-                prior_path = f'./trained_probes/interventor_lstm_{args.split_num-1}k.pth'
+                if args.test:
+                    save_path = './trained_probes/interventor_lstm_test.pth'
+                    prior_path = save_path
+                else:
+                    save_path = f'./trained_probes/interventor_lstm_{args.split_num}k_classify-{args.positive_samples_only}.pth'
+                    prior_path = f'./trained_probes/interventor_lstm_{args.split_num-1}k.pth'
             else:
                 save_path = f'./trained_probes/{type}_{aggregate}_{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}.json'
                 prior_path = f'./trained_probes/{type}_{aggregate}__{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}.json' #因为output size变了，所以重新训练
@@ -199,7 +215,8 @@ def main():
                 )
             # load state_dict if there's any
             if os.path.exists(prior_path):
-                probe.load_state_dict(prior_path)
+                state_dict = torch.load(prior_path)
+                probe.load_state_dict(state_dict)
 
             probe.to(device)
             '''

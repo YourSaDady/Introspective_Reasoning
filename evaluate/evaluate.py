@@ -15,7 +15,7 @@ import numpy as np
 import pickle
 import sys
 import time
-# sys.path.append('/h/382/momoka/HKU/honest_llama')
+sys.path.append('/h/382/momoka/HKU/honest_llama')
 # sys.path.append('../')
 
 # import llama
@@ -64,7 +64,7 @@ def main():
     parser.add_argument('--classifier_path', type=str, default='./trained_probes/layer3_lstm_llama3.1_8b_instruct_16_math_shepherd_2k_best84.json', help='state_dict (json) path to the classifier')
     parser.add_argument('--intervention_module_path', type=str, default='./trained_probes/interventor_lstm_10k_classify-True.pth', help='state_dict path to the intervention module')
     parser.add_argument('--compare_baseline', type=bool, default=True, help='whether compare with baseline. default to be True')
-    parser.add_argument('--max_step_iters', type=int, default=15, help='the max number of reasoning steps per sample, default to be 15')
+    parser.add_argument('--max_step_iters', type=int, default=30, help='the max number of reasoning steps per sample, default to be 15')
     parser.add_argument('--stat_path', type=str, default='./evaluate/classify_intervene_result.jsonl', help='the path to save the evaluation statistics')
     parser.add_argument('--device', type=int, default=0)
     args = parser.parse_args()
@@ -86,9 +86,12 @@ def main():
     start_t = time.time()
     print("Loading dataset...")
     #prefix_len是interpret representations时需要忽视的Input部分（sys_prmompt + examples + instruction) 的token长度
-    eval_set, prefix_len = formatter(data_path, tokenizer, args.n_shot) # for math-shepherd, prompt = I+O (problem + steps so-far), already tokenized; label is binary
+    eval_set, prefix = formatter(data_path, tokenizer, args.n_shot) # for math-shepherd, prompt = I+O (problem + steps so-far), already tokenized; label is binary
+    prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.size(-1)
+    prefix_seq_len = len(prefix)
+    
     print(f'Eval set size: {len(eval_set)}')
-    eval_loader = DataLoader(eval_set, batch_size=4, shuffle=False) #TODO: batchalize not implemented
+    # eval_loader = DataLoader(eval_set, batch_size=4, shuffle=False) #TODO: batchalize not implemented
     spent = convert_time(start_t)
     print(f'- Time spent on loading test set: {spent[0]}:{spent[1]}:{spent[2]}, or {(time.time() - start_t):.5f} secs')
 
@@ -155,35 +158,45 @@ def main():
     stat_path = args.stat_path
     #__________________
     start_t = time.time()
+    all_ans = []
     pv_acc_count = 0
     org_acc_count = 0
+    invalid_count = 0
     with open(stat_path, 'w') as file:
         for i, sample  in enumerate(tqdm(eval_set)):
-            question = sample['question'] #tokenized full_prompt (except the past steps)
+            question = prefix + sample['question'] #tokenized full_prompt (except the past steps)
             answer = sample['answer'] #int
+            if not answer: #answer is null, invalid sample
+                invalid_count += 1
+                continue
             # 1. generate solutions before and after intervention
-            pv_steps, pv_ans, org_steps, org_ans = gen_steps_ans(tokenizer, pv_model, model, question, max_step_num, compare_baseline)
+            pv_steps, pv_ans, org_steps, org_ans = gen_steps_ans(tokenizer, pv_model, model, question, max_step_num, compare_baseline, prefix_len=len(prefix))
             if i == 0:
-                print(f'\n^^^\n - pv_steps: \n{pv_steps}\n - pv_ans: [{pv_ans}]\n - org_steps: \n{org_steps}\n - org_ans: [{org_ans}]')
-            pv_acc_count += (pv_ans == answer)
-            org_acc_count += (org_ans == answer)
+                print(f'\n^^^^^^\n - pv_steps: \n{pv_steps}\n - pv_ans: [{pv_ans}]\n - org_steps: \n{org_steps}\n - org_ans: [{org_ans}]\n^^^^^^\n')
+            pv_acc_count += (pv_ans == answer and answer)
+            org_acc_count += (org_ans == answer and answer is None)
             dict = {
-                'question': question,
+                'question': question[prefix_seq_len:],
                 'answer': answer,
                 'pv_solution': pv_steps,
                 'pv_answer': pv_ans,
+                'pv_correct': (pv_ans == answer),
                 'org_solution': org_steps,
                 'org_ans': org_ans,
+                'org_correct': (org_ans == answer),
             }
+            all_ans.append(answer)
             file.write(json.dumps(dict) + '\n')
+            # break ##########################test
         # end of sample iter
         result= {
-            'Acc': {'original': org_acc_count / len(eval_set), 'intervened': pv_acc_count / len(eval_set)}
+            'Acc': {'original': round(org_acc_count / (len(eval_set)-invalid_count), 5), 'intervened': round(pv_acc_count / (len(eval_set)-invalid_count), 5)}
         }
         print(f'\n\n___Evaluation Result___\noriginal Acc: [{org_acc_count}/{len(eval_set)}] ({result["Acc"]["original"]*100:.3f}%)\intervened Acc: [{pv_acc_count}/{len(eval_set)}] ({result["Acc"]["intervened"]*100:.3f}%)\n_______________________\n')
         file.write('\n' + json.dumps(result) + '\n')
     # end of write
     print(f'Statistics saved to {stat_path}')
+    print(f'all_ans: {all_ans}')
 
     spent = convert_time(start_t)
     print(f'- Time spent on decoding: {spent[0]}:{spent[1]}:{spent[2]}, or {(time.time() - start_t):.5f} secs')

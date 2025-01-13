@@ -1,0 +1,35 @@
+{
+    "question": "<Problem>: Carla had 400 chickens on her chicken farm. However, 40% of the chicken died due to a certain disease. How many chickens were there if she bought ten times as many chickens as the number that died due to disease?\n\n<Solution Steps>: ", 
+    "answer": "1840", 
+    "pv_solution": "", 
+    "pv_answer": null, 
+    "org_solution": "Step0: First, let's find the number of chickens Carla bought.\nStep1: Since Carla started with 400 chickens, we can find the number of chickens that died by multiplying 400 by 40% (or 0.4.\nStep2: The number of chickens that died is 400 x 0.4 = 160.\nStep3: Next, we can find the number of chickens Carla bought by multiplying the number of chickens that died by 10.\nStep4: 160 x 10 = 1600.\nStep5: Now, let's find the total number of chickens by adding the number of chickens Carla started with and the number of chickens she bought.\nStep6: Now, let's find the total number of chickens by adding the number of chickens Carla started with and the number of chickens she bought.\nStep7: The total number of chickens is 400 + 1600 = 2000.\nStep8: The final answer is: $\\boxed{2000}$.\n", 
+    "org_ans": "2000"
+},
+{
+    "question": "<Problem>: Solve the inequality\n\\[2 - \\frac{1}{2x + 3} < 4.\\]\n\n<Solution Steps>: ", 
+    "answer": "x < -7/5", 
+    "pv_solution": "", 
+    "pv_answer": null, 
+    "org_solution": "Step0: The inequality given is $2 - \\frac{1}{2x + 3} < 4.$.\nStep1: \nStep2: To solve this inequality, I can use the following algebraic operations and properties:.\nStep2: First, I can add $\\frac{1}{2x + 3}$ to both sides of the inequality.\nStep3: After doing so, the inequality becomes $2 < 4 + \\frac{1}{2x + 3}.$.\nStep4: This can be further simplified to $2 - 4 < \\frac{1}{2x + 3}.$.\nStep5: Then I get $-2 < \\frac{1}{2x + 3}.$.\nStep6: Next, I can take the reciprocal of both sides of the inequality, keeping in mind that when we divide by a negative number, we must reverse the direction of the inequality.\nStep7: This makes the inequality $\\frac{1}{-2} > \\frac{2x + 3}{1}.$.\nStep8: Simplifying, we have $-\\frac{1}{2} > 2x + 3.$.\nStep9: The next step is to subtract 3 from both sides of the inequality.\nStep10: This gives us $- \\frac{5}{2} > 2x.$.\nStep11: Now, we can divide both sides of the inequality by 2 to solve for x.\nStep12: Doing so, we get $\\frac{-5}{4}>$ x.\nStep13: This gives us $- \\frac{5}{2} > 2x.$.\nStep14: Hence, the solution to the given inequality is $x < \\frac{-5}{4}$.\nStep15: Hence, the solution to the given inequality is $x < \\frac{-5}{4}$.\nStep16: Therefore, the solution set is all real numbers less than $\\frac{-5}{4}$, which can also be written as $\\boxed{(-\\infty, -\\frac{5}{4})}$.\n", 
+    "org_ans": "(-\\infty, -\\frac{5}{4})"
+},
+
+
+
+// 以下是dpo dataset的
+{
+    "prompt": "The question: Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?\nPlease directly output the reasoning steps.\n", 
+    "chosen": [
+        {
+            "role": "assistant", 
+            "content": "The reasoning steps are:\n\nNatalia sold clips to 48 of her friends in April.\nThen she sold half as many clips in May. Half of 48 is 48 / 2 = 24. \nSo she sold 48 in April and 24 in May. \n48 + 24 = 72.\nThe answer is: \\boxed{72}."
+        }
+        ], 
+    "rejected": [{
+        "role": "assistant", 
+        "content": "The reasoning steps are:\n\nNatalia sold clips to 48 friends in April.\nShe then sold half as many clips in May. Half of 48 is 48 / 2 = 24. \nSo in May, she sold 24 clips.\nIn total, she sold 48 + 24 = 72 clips.\nThe answer is: \\boxed{72}."
+    }],
+    "chosen_weights": -0.15019910475026788, 
+    "rejected_weights": -0.22433405652773994
+}

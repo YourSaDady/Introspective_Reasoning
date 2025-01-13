@@ -26,13 +26,13 @@ def convert2JSONserializable(data_dict):
         data_dict[key] = str(h_list)
 
 layer = 16
-split_num = 10
+split_num = 9
 divs = {'train': 791, 'validation': 201} #size
 
-
+# for split_num in range(6, 10):
 # def load_HF_data_slit()
 for div in divs:
-    if div == 'train': ################
+    if div == 'validation': ################
         continue ################
     print(f'Now on {div}...')
     src_dir = f'./features/intervene_{split_num}k/{div}'
@@ -42,30 +42,32 @@ for div in divs:
 
     # Iterate through each subdirectory
     print("Iterate through each subdirectory")
-    for i in tqdm(range(divs[div])):
-        subdir = os.path.join(src_dir, f'sample{i}')
-        parquet_file = os.path.join(subdir, f'{div}-00000-of-00001.parquet')
+    with open(save_dir, 'w') as f:
+        for i in tqdm(range(divs[div])):
+            subdir = os.path.join(src_dir, f'sample{i}')
+            parquet_file = os.path.join(subdir, f'{div}-00000-of-00001.parquet')
 
-        if os.path.exists(parquet_file):
-            # Read the Parquet file
-            dataset = pq.read_table(parquet_file).to_pandas()
+            if os.path.exists(parquet_file):
+                # Read the Parquet file
+                dataset = pq.read_table(parquet_file).to_pandas()
 
-            # Convert to Hugging Face Dataset
-            data = Dataset.from_pandas(dataset)
-            # print(f"h_prior: {data['h_prior']}")
-            # print(f'h_posterior: {data["h_posterior"]}')
-            data_dict = data.to_dict()
-            # convert2JSONserializable(data_dict)
+                # Convert to Hugging Face Dataset
+                data = Dataset.from_pandas(dataset)
+                # print(f"h_prior: {data['h_prior']}")
+                # print(f'h_posterior: {data["h_posterior"]}')
+                data_dict = data.to_dict()
+                # convert2JSONserializable(data_dict)
 
-            # Append the dataset to the list
-            all_data.append(data_dict)
+                # # Append the dataset to the list
+                # all_data.append(data_dict)
+                f.write(json.dumps(data_dict) + '\n')
         # break
 
-    # Concatenate the datasets from all subdirectories
-    print("Converting dataset into a jsonl file...")
+    # # Concatenate the datasets from all subdirectories
+    # print("Converting dataset into a jsonl file...")
 
-    # Iterate through each dataset in all_data and write to the output JSONL file
-    with open(save_dir, 'w') as f:
-        for data_dict in all_data:
-            f.write(json.dumps(data_dict) + '\n')
+    # # Iterate through each dataset in all_data and write to the output JSONL file
+    # with open(save_dir, 'w') as f:
+    #     for data_dict in all_data:
+    #         f.write(json.dumps(data_dict) + '\n')
     print(f'dataset saved to {save_dir}')
