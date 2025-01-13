@@ -15,7 +15,8 @@
   - Build hidden_states-label pairs for each data split: `./on-the-fly_probe_training.sh`
   - Train and evaluate classifiers: `./probes_comparable_taining.sh`
 ### 4. Build intervention modules
-  - :wrench:
-  - Datasets for training the intervention module / PEFT is on the HuggingFace: 
+  - Build hs-hs'-label pairs (hidden states before and after intervention and the step label) for each data split: `python ./get_activations/build_intervention_datsets.py --split_num {n}`, with split index `n` ranging from 1 to 10
+  - Datasets for training the intervention module / PEFT is on the HuggingFace: `Lo-Fi-gahara/intervene_{n}k`
+  - Train the intervention module: `python ./probes_training/probe_training.py --split_num {n} --probe_type intervention_module`
 ### 5. Analysis
   - :wrench:
