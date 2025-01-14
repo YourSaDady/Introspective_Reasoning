@@ -2,7 +2,7 @@
 import os
 import torch
 import json
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from tqdm import tqdm
 import numpy as np
 import pickle
@@ -17,7 +17,7 @@ import argparse
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 
 # Specific pyvene imports
-from utils import get_llama_activations_pyvene, tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q, get_llama_hidden_states, tokenized_math_shepherd
+from utils import get_llama_activations_pyvene, tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q, get_llama_hidden_states, tokenized_math_shepherd, convert_time, upload_batch_to_HF
 from interveners import wrapper, Collector, ITI_Intervener
 import pyvene as pv
 
@@ -52,8 +52,10 @@ def main():
     parser.add_argument('--n_shot', type=int, default=8, help='number of examples given in the Input. Represeantions are ignored during classifying and intervention')
     parser.add_argument('--get_hidden_states', type=bool, default=True, help='get hidden states instead for training the probe') #added
     parser.add_argument('--split_num', type=int, default=1, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
-    parser.add_argument('--layer', type=int, default=15, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
+    parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
     parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--local_save', type=bool, default=False, help='whether to save locally as a jsonl file or upload the dataset to the HF hub')
+    parser.add_argument('--hf_batch_size', type=int, default=100, help='how many samples in one push to the HF, default to be 100.')
     args = parser.parse_args()
 
     model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
@@ -127,7 +129,7 @@ def main():
         if args.get_hidden_states: #只收集指定层的mlp output(会包含prompt吗？是不是没有head概念？)
             if layer == args.layer:
                 print(f'\n^^^\nThe layer we look into: {layer_id}\n^^^\n')
-                collector = Collector(multiplier=0, head=-1) #head=-1 to collect all head activations, multiplier doens't matter
+                collector = Collector(multiplier=0, head=-1, prefix_len=prefix_len) #head=-1 to collect all head activations, multiplier doens't matter
                 collectors.append(collector) #每层一个collector收集所有heads的states和actions (activations包含这俩)
                 pv_config.append({
                     "component": f"model.layers[{layer}].post_attention_layernorm.output", #.mlp.output??
@@ -149,16 +151,19 @@ def main():
         all_collector_hs = []
         all_prompts = [train_prompts, validate_prompts]
         all_labels = [train_labels, validate_labels]
-
+        hf_batch = []
+        hf_path = f'Lo-Fi-gahara/classify_layer{args.layer}_split{args.split_num}'
         start_t = time.time()
         for is_validate, (prompt_set, label_set) in enumerate(zip(all_prompts, all_labels)):
             if not is_validate:
-                save_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_train_set.jsonl'
+                save_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_classifier_train_set.jsonl'
+                split = 'train'
             else:
-                save_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_validate_set.jsonl'
+                save_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_classifier_validate_set.jsonl'
+                split = 'validation'
             with open(save_path, "w") as f:
 
-                for i  in tqdm(range(len(prompt_set))): #train_set / validate_set
+                for i  in tqdm(range(len(prompt_set))): #train_set / validate_set 这里每个sample是一个step
                     prompt = prompt_set[i]
                     label = label_set[i]
                     if label.strip() == '+':
@@ -166,7 +171,10 @@ def main():
                     else:
                         label = 0
                     #output_hs shape: torch.Size([161, 4096])
+                    gen_t = time.time()
                     output_hs, collector_hs, _ = get_llama_activations_pyvene(args.layer, tokenizer, collected_model, collectors, prompt, device) #specify the layer to reduce storage
+                    gen_spent = convert_time(gen_t) #~3s per sample
+                    # print(f'\n***\nTime spent for a single generation: {gen_spent[0]}:{gen_spent[1]}:{gen_spent[2]}\n***\n')
                     if i == 0:    
                         print(f'output_hs shape: {output_hs.shape}') # torch.Size(I+O_length, 4096)
                         # print(f'collector_hs shape: {collector_hs.shape}') # (65, 4096)
@@ -175,8 +183,14 @@ def main():
                         'label': label
                     }
                     # all_collector_hs.append(collector_hs.copy())
-
-                    f.write(json.dumps(h_l) + "\n")
+                    if args.local_save:
+                        f.write(json.dumps(h_l) + "\n")
+                    else:
+                        hf_batch.append(h_l)
+                        if (i+1) % args.hf_batch_size == 0 or i+1 == len(prompt_set): #batch is full or the last batch
+                            batch_name = f'sample{i+1-len(hf_batch)}-{i}'
+                            upload_batch_to_HF(hf_batch, hf_path, split=split, batch_name=batch_name)
+                            hf_batch.clear()
                     # if i == 4:
                     #     break#################
 

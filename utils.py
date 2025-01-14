@@ -77,20 +77,46 @@ def format_truthfulqa(question, choice):
 def format_truthfulqa_end_q(question, choice, rand_question): 
     return f"Q: {question} A: {choice} Q: {rand_question}"
 
-def extract_a(text, src='label'): #can be integer or any form of non-integer!
+def extract_a(text, src='label'): #can be integer or any form of non-integer! return a string
     if src == 'label':
         prefix = 'The answer is: '
         suffix = ' +-\n'
     elif src == 'generated':
-        prefix = 'boxed{'
-        suffix = ' }$'
+        prefix = '\\boxed{'
+        suffix = '}$'
     start_index = text.find(prefix)
     if start_index == -1:
         answer = None
     else:
         start_index += len(prefix)
-        answer = text[start_index:].rstrip(suffix)
+        # answer = text[start_index:].rstrip(suffix).lstrip(' ')
+        text = text[start_index:]
+        text_list = text.split('\n')
+        line = text_list[0]
+        print(f'the line containing the answer: [{line}], splited from {text_list}') ############
+        end_index = line.find(suffix)
+        print(f'end_index: {end_index}')
+        print(f'text[:end_index]: {line[:end_index]}')
+        answer = line[:end_index].strip(' ')
+        # if "frac" in answer:
+        #     answer.rstrip('}$.')
+    # if answer and answer.startswith('\\frac{'):
+    #     answer += '}'
+    # print(f'answer: {answer}') ############
     return answer
+
+def extract_dpo_s_a(text): 
+    prefix = 'The reasoning steps are:\n\n'
+    start_idx = text.find(prefix)
+    text = text[start_idx:]
+    steps = text.split('\n')
+    ans_start = steps[-1].find('\\boxed{')
+    ans_start += len('\\boxed{')
+    ans_end = steps[-1].find('}.')
+    ans = steps[-1][ans_start:ans_end]
+
+    return steps, ans
+
 
 def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
     import re
@@ -137,7 +163,7 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
 def build_prompt(problem, steps, curr_idx, examples):
     history = ''
     for i, step in enumerate(steps[:curr_idx+1]):
-        history += f'<Step {i}>: {step}\n\n'
+        history += f'Step{i}: {step}\n'
 
     #______Define your system prompt and instruction here______
     sys_prompt = '\nYou are going to solve a math problem step by step. Some examples are given: \n'
@@ -181,6 +207,130 @@ def get_random_seed():
     import time
     return int(time.time() * 1000)
 
+from datasets import Dataset
+# concatenate the sample batch into a single Dataset object and upload to HF
+def upload_batch_to_HF(batch, hf_path, split='train', batch_name='sample0-100'): #default batch size is 100
+    keys = [key for key in batch[0]]
+    batch_dict = {}
+    for key in keys:
+        batch_dict[key] = [sample_dict[key] for sample_dict in batch]
+    batch_data = Dataset.from_dict(batch_dict)
+    batch_data.push_to_hub(hf_path, split=split, data_dir=batch_name, max_shard_size="1GB",)
+
+def nshot_chats(nshot_data, question, n=8): #borrowed
+    chats = []
+    for qna in nshot_data[:n]:
+        chats.append({"role": "user", "content": f"Question: {qna['q']}"})
+        chats.append({"role": "assistant", "content": f"Answer: {qna['a']}"})
+    chats.append({"role": "user", "content": f"Question: {question}"+" Let's think step by step. At the end, you MUST write the answer after '####'."})
+    return chats
+
+def extract_ans_from_response(answer: str, eos=None): #borrowed
+    if eos:
+        answer = answer.split(eos)[0].strip()
+    answer = answer.split('####')[-1].strip()
+    for remove_char in [',', '$', '%', 'g']:
+        answer = answer.replace(remove_char, '')
+    return answer
+
+def get_response(generator, chats): #borrowed
+    gen_text = generator(chats)[0]  # First return sequence
+    return gen_text['generated_text'][-1]['content']
+
+
+
+
+
+import os
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline #, BitsAndBytesConfig
+HF_TOKEN = os.getenv("HF_TOKEN") #?
+MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+N_SHOT = 8
+def run_test_gen(dataset):
+    '''
+    一个完整的、标准的gsm8k reproduce
+
+    input: [{'q': q, 'a': a, 'y': label}]
+    '''
+    # bnb_config = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_use_double_quant=True,
+    #     bnb_4bit_quant_type="nf4",
+    #     bnb_4bit_compute_dtype=torch.bfloat16,
+    # )
+    print(f'\n\nNow start generation with pipeline!\n')
+    test_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
+    test_model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="auto", token=HF_TOKEN) #quantization_config=bnb_config
+    test_generator = pipeline(
+        "text-generation",
+        model=test_model,
+        tokenizer=test_tokenizer,
+        pad_token_id=test_tokenizer.eos_token_id,
+        max_new_tokens=300,
+        device='cuda',
+    )
+    correct = 0
+    total = len(dataset[N_SHOT:])
+    log_path = './evaluate/pipeline.jsonl'
+    with open(log_path, 'w') as f:
+        for i, sample in enumerate(tqdm(dataset[N_SHOT:])):
+            messages = nshot_chats(nshot_data=dataset, n=N_SHOT, question=sample['q'])  # 8-shot prompt
+            response = get_response(test_generator, messages)
+            pred_ans = extract_ans_from_response(response)
+            label = sample['y']
+            print(f'\nthe {i}th response: {response}\nthe pred_ans: {pred_ans}\nthe ground truth: {label}\n')
+            if pred_ans == label:
+                correct += 1
+            log_dict = {
+                'sample_id': i,
+                'correct': (pred_ans == label),
+                'pred_ans': pred_ans,
+                'ground_truth': label,
+                'question': sample['q'],
+                'response': response,
+            }
+            f.write(json.dumps(log_dict)+'\n')
+        result = f'\n\nCorrect: {correct}/{total}, Acc: {correct/total:.3f}\n'
+        print(result)
+        f.write(json.dumps(result))
+    print('\n\nFinished pipeline generation\n\n')
+
+import re
+def eval_gsm8k(hf_path, eval_size=200):
+    '''
+    return a list of dicts:
+    {
+        'q': question,
+        'a': a single string of reasoning steps joined by '\n',
+        'y': ground truth answer
+    }
+    '''
+    def reformat_ans(ans):
+        ans_list = re.split(r'(?<!\d)\.(?!\d)|,', ans) #然并卵
+        ans_list = [s.strip() for s in ans_list if s.strip()]
+        a = ''
+        for s in ans_list:
+            a += (s + '.\n')
+        # a = a.rstrip('\n')
+        a += '\n'
+        y = a.split('####')[1].strip(' .')
+        return a, y
+
+    eval_data = load_dataset(hf_path, 'main', split='test')
+    eval_set = []
+    for i, sample in enumerate(tqdm(eval_data)):
+        q = sample['question']
+        a, y = reformat_ans(sample['answer'])
+        qna = {
+            'q': q,
+            'a': a,
+            'y': y
+        }
+        if i == 0:
+            print(f'qna: {qna}')
+        eval_set.append(qna)
+    return eval_set
+
 def eval_math_shepherd(csv_path, tokenizer, n_shot, eval_size=200):
     '''
     Return tokenized n-shot prompt and answer for each sample question
@@ -188,8 +338,8 @@ def eval_math_shepherd(csv_path, tokenizer, n_shot, eval_size=200):
     # load data split
     import csv
     dataset = []
+    test_set = [] #size=20
     prefix = ''
-    prefix_len = 0
     with open(csv_path, newline='') as csvfile:
         csvreader = csv.DictReader(csvfile)
         count = 0
@@ -198,6 +348,18 @@ def eval_math_shepherd(csv_path, tokenizer, n_shot, eval_size=200):
             label = row['label']
             question, steps, _ = extract_q_s_l(label)
             answer = extract_a(label)
+            if answer == None:
+                continue
+            a = ''
+            for step in steps[:-1]:
+                a+=(step+'\n')
+            a+=f'#### {answer}' #统一为gsm8k格式
+            qna = {
+                'q': question,
+                'a': a,
+                'y': answer
+            }
+            test_set.append(qna)
             # if count == 0:
             #     print(f'\n- question: {question}\n- answer: {answer}\n')
 
@@ -207,27 +369,28 @@ def eval_math_shepherd(csv_path, tokenizer, n_shot, eval_size=200):
                 s = '\nSolution steps: \n'
                 for i, step in enumerate(steps):
                     s += f'Step{i}: {step}\n'
-                example = q + s + '\n'
+                example = q + s + '\nTherefore, the final answer is \\boxed{' + answer + '}$.'
                 examples += example
                 count += 1
                 continue
             if count == n_shot: # build prefix for once
                 #______Define your system prompt and instruction here______
                 sys_prompt = '\nYou are going to solve a math problem step by step. Some examples are given: \n'
-                instruction = '\nGiven the examples above, solve the following problem by completing the solution steps below: \n'
+                instruction = '\nGiven the examples above, solve the following problem by completing the solution steps below, and when you reach the final answer, you should put the answer between "\\boxed{" and "}$". \n'
                 #__________________________________________________________
                 prefix = f'{sys_prompt}<Examples>: {examples}\n\n{instruction}'
-                prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.size(-1)
+                prefix_token_len = tokenizer(prefix, return_tensors='pt').input_ids.size(-1)
+                prefix_seq_len = len(prefix)
 
             partial_probing_input = f'<Problem>: {question}\n\n<Solution Steps>: ' #这里构建dataset时还未知past steps, 因此probing input是partial的
-            partial_prompt = prefix + partial_probing_input #partial!
-            q_a = {'question': partial_prompt, 'answer': answer}
+            # partial_prompt = prefix + partial_probing_input #partial!
+            q_a = {'question': partial_probing_input, 'answer': answer}
             dataset.append(q_a)
             count += 1
             # if count == eval_size:
-            if count == 9: ##############test
+            if count == 20: ##############test
                 break######################
-    return dataset, prefix_len
+    return dataset, prefix, test_set
 
 def tokenized_math_shepherd(dataset, tokenizer, n_shot): #always read 1k original samples in one call
     prefix_len = 0
@@ -274,16 +437,89 @@ def tokenized_math_shepherd(dataset, tokenizer, n_shot): #always read 1k origina
                     validate_prompts.append(prompt)
                     validate_labels.append(label)
             count += 1###############
-            if count == 10: ##############
-                break######################
+            # if count == 20: ##############
+            #     break######################
     return prefix_len, train_prompts, train_labels, validate_prompts, validate_labels
+import json
+import csv
+import math
+def tokenized_dpo_4_intervene(path, tokenizer, n_shot, train_rate=1.0): # the returned train_pairs and validate_pairs are 2D arrays of samples[steps[{chosen_infos..., rejected_infos...}]]
+    # count the total number of samples
+    lines = 0
+    with open(path, 'r') as file:
+        for line in file:
+            lines += 1
+    train_num = math.floor(lines * train_rate)
+    train_pairs = []
+    validate_pairs = []
+    examples = ''
+    prefix_len = 0
+    valid_count = 0
+    with open(path, 'r') as file:
+        for i, line in enumerate(tqdm(file)):
+            sample = json.loads(line.strip())
+            chosen_weights = sample['chosen_weights']
+            rejected_weights = sample['rejected_weights']
+            q = sample['prompt']
+            q_start = q.find('The question: ')
+            q = q[q_start:]
+            chosen_s, chosen_a = extract_dpo_s_a(sample['chosen'][0]['content'])
+            rejected_s, rejected_a = extract_dpo_s_a(sample['rejected'][0]['content'])
+            if i == 0:
+                print(f'\n***\nchosen_s ({len(chosen_s)}): \n{chosen_s}\nrejected_s ({len(rejected_s)}): \n{rejected_s}\n***\n')
+            
+            if not len(chosen_s) == len(rejected_s): #some samples have inequal lengths of chosen and rejected steps
+                print(f'Inequal! chosen_s: {len(chosen_s)}, rejected_s: {len(rejected_s)}')
+                continue
+            else:
+                valid_count += 1
+            
+            if valid_count < n_shot:
+                q = f'\n\nProblem{valid_count}: {q}\n'
+                s = '\nSolution steps: \n'
+                for j, step in enumerate(chosen_s):
+                    s += f'Step{j}: {step}\n'
+                example = q + s + '\n'
+                examples += example
+                continue
+
+            if valid_count == 5000: ################### test
+                print(f'{valid_count}/{i}/{train_num} total lines have passed')
+                break ###################
+            sample = []
+            for step_id in range(len(chosen_s)-1):
+                chosen_prompt_curr, prefix = build_prompt(q, chosen_s, step_id, examples)
+                rejected_prompt_curr, prefix = build_prompt(q, rejected_s, step_id, examples)
+                # chosen_prompt_curr = tokenizer(chosen_prompt_curr, return_tensors='pt')
+                # rejected_prompt_curr = tokenizer(rejected_prompt_curr, return_tensors='pt')
+                chosen_step_len = tokenizer(f'Step{i}: {chosen_s[step_id]}\n', return_tensors='pt').input_ids.shape[-1]
+                rejected_step_len = tokenizer(f'Step{i}: {rejected_s[step_id]}\n', return_tensors='pt').input_ids.shape[-1]
+                if step_id == 0 and i == n_shot: #需要忽视representation的地方, 只计算一次
+                    prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.shape[-1]
+                    print(f'Inside tokenized_dpo_4_intervene: prefix_len = {prefix_len}') #3466
+                sample_dict = {
+                    'chosen_prompt_curr': chosen_prompt_curr,
+                    'chosen_step_len': chosen_step_len,
+                    'chosen_weights': chosen_weights,
+                    'rejected_prompt_curr': rejected_prompt_curr,
+                    'rejected_step_len': rejected_step_len,
+                    'rejected_weights': rejected_weights,
+                }
+                sample.append(sample_dict)
+            
+            if i < train_num:
+                train_pairs.append(sample)
+            else:
+                validate_pairs.append(sample)
+
+
+    return prefix_len, train_pairs, validate_pairs
 
 def tokenized_math_shepherd_4_intervene(dataset, tokenizer, n_shot): #wrap by samples
     prefix_len = 0
     train_prompt_pairs = [] # train_set_size = (80%split_num - n_shot), 2D list: samples[sample_steps[...], ...]
     validate_prompt_pairs = [] #validate_set_size = (20%split_num)
     # load data split
-    import csv
     with open(dataset, newline='') as csvfile:
         csvreader = csv.DictReader(csvfile)
         count = 0
@@ -468,7 +704,7 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
             # penalty_alpha=0.6, 
             do_sample=True,
             # top_k=8,
-            # temperature=1.0,
+            temperature=1.0,
             # repitition_penalty=1.2,
             max_new_tokens=100, #max_length = len(intp,
             # output_attentions=True,ut_prompt) + max_new_tokens #看看60怎么来的
@@ -481,8 +717,8 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
         _, output_dict = collected_model.generate( #unintervened, intervened
             prompt, 
             unit_locations=None,
-            # unit_locations={"sources->base": (None, [[[base_unit_location]]])}, #dim0: hidden_dim? dim1: collector_idx? dim2: token_dim
             intervene_on_prompt=True, #False（default）时，base_unit_location只有=0时有效
+            subspaces=[{'logging':False}],
             generation_config = gen_config,
         )
         '''
@@ -497,14 +733,16 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
     for i, collector in enumerate(collectors): #遍历所有观测的layers (setting是只观测一个)
         # assert len(collector.states) == gen_config.max_new_tokens # expect to collect I+O length (max_new_tokens, the 1st token is input) 
         if collector.collect_state: #true by default
-            states_per_gen = torch.stack(collector.states, axis=0)#.cpu().numpy() # (92, 4096) #all heads on each layer by default, stack all token steps (except the first from input)
-            print(f'\nstates_per_gen.shape: {states_per_gen.shape}\n')
+            states_per_gen = torch.cat(collector.states, dim=1)#.cpu().numpy() # (92, 4096) #all heads on each layer by default, stack all token steps (except the first from input)
+            states_per_gen = states_per_gen.squeeze(0)
+            # print(f'\nstates_per_gen.shape: {states_per_gen.shape}\n') #torch.Size([322, 4096]) 不包含examples的I+O length
+            # print(f'\ncollector.states[0].shape: {collector.states[0].shape}\n') #torch.Size([1, 304, 4096]) 不包含examples的Input length
             head_wise_hidden_states.append(states_per_gen) #why head_wise? 应该是layer-wise!
         else:
             head_wise_hidden_states.append(None)
         collector.reset() #清空 states和actions
     # print(f'len(head_wise_hidden_states): {len(head_wise_hidden_states)}') #1?
-    hidden_states = head_wise_hidden_states[0].detach().cpu().numpy()
+    hidden_states = head_wise_hidden_states[0].detach().cpu().numpy() #就是states_per_gen
     '''
     对 hidden states进行reshape: 
         before: [max_new_tokens][mlp_layer_num]tensor(sequence_num, input_length/1, hidden_size)
@@ -534,18 +772,22 @@ def get_llama_activations_pyvene(specified_layer, tokenizer, collected_model, co
 def get_curr_step_range(token_list):
     id_start = 0
     id_end = len(token_list)
-    start_tokens = {':', '>:'}
-    end_tokens = {'}$', '$.', '.\n\n', '\n\n'}
+    start_token = 'Step'#= {'Step'}#{':', '>:'}
     for i, token in enumerate(token_list):
-        if token in start_tokens and id_start == 0:
-            id_start = i + 1
-        elif token in end_tokens and id_end == len(token_list):
-            id_end = i + 1
+        if (token.startswith(start_token) or token.endswith(start_token)) and i+3 < len(token_list) and token_list[i+2] == ':':
+            id_start = i + 3
+            break
+    for i in range(id_start+1, len(token_list)):
+        if token_list[i].endswith('\n') and i >= id_start:
+            id_end = i
+            break
     return id_start, id_end
 
 def get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt, device): #generate the hidden states for a single step
     # func_start_t = time.time()
     with torch.no_grad():
+        if isinstance(prompt, str):
+            prompt = tokenizer(prompt, return_tensors='pt')
         prompt = prompt.to(device)
         '''method 2: generate():
         output = (
@@ -621,30 +863,110 @@ def get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_le
         collector.reset() #清空 states和actions\
     head_wise_hidden_states = head_wise_hidden_states[0].detach().cpu().numpy()
 
-    return original_hidden_states, head_wise_hidden_states, (input_len+step_start, input_len+step_end)
+    return original_hidden_states, head_wise_hidden_states, (input_len+step_start, input_len+step_end), input_len
 
-def decode_step_ans(tokenizer, logits): #input: [100][1]torch.Size([128256])
-    logits = torch.stack([token[0] for token in logits]) #[100]torch.Size([128256])
-    pred_token_ids = torch.argmax(logits, dim=-1)
-    decoded_list = [tokenizer.decode(token_id, skip_special_tokens=True) for token_id in pred_token_ids.tolist()]
+def decode_step_ans(tokenizer, sequence_ids): #input: [100][1]torch.Size([128256])
+    # logits = torch.stack([token[0] for token in logits]) #[100]torch.Size([128256])
+    # pred_token_ids = torch.argmax(logits, dim=-1)
+    output_ids = sequence_ids[-100:]
+    decoded_list = [tokenizer.decode(token_id, skip_special_tokens=True) for token_id in output_ids] #default max_new_tokens=100
     step_start, step_end = get_curr_step_range(decoded_list)
-    output = tokenizer.decode(pred_token_ids.tolist(), skip_special_tokens=True)
-    step = tokenizer.decode(pred_token_ids.tolist()[step_start:step_end], skip_special_tokens=True)
-    ans = extract_a(output) # src='generated'
+    output = tokenizer.decode(output_ids, skip_special_tokens=True)
+    # print(f'\n\n    - decoded list: \n~~~~~~~\n{decoded_list}\n~~~~~~~\n') ##############
+    step = tokenizer.decode(output_ids[step_start:step_end], skip_special_tokens=True)
+    step = step.rstrip(' .')
+    step = step.lstrip(' ')
+    step += '.'
+    ans = extract_a(step, src='generated') # src='generated'
+    # print(f'\n\n    - decoded step answer: [{ans}]\n\n') ##############
     return step, ans
 
 def complete_prompt(tokenizer, prompt, past_steps): #return tokenized full_prompt
     history = '\n'
     for i, step in enumerate(past_steps):
-        history += f'<Step {i}>: {step}\n\n'
-    history += f'<Step {len(past_steps)}>: \n...'
+        history += f'Step{i}: {step}\n\n'
+    # history += f'<Step {len(past_steps)}>: \n...' #instruction-fllowing效果并不好
     #return prefix (sys_prompt + examples + instruction) and probing_input (problem + partial_sol_steps)
     full_prompt = prompt + history
-    if past_steps == []: ############
-        print(f'\n___full prompt___\n{full_prompt[:666]}\n\n...\n\n{full_prompt[-666:]}\n______________\n') ############
-    return tokenizer(full_prompt, return_tensors='pt')
+    # if past_steps == []: ############
+        # print(f'\n___full prompt___\n{full_prompt[:666]}\n\n...\n\n{full_prompt[-666:]}\n______________\n') ############
+    return full_prompt, tokenizer(full_prompt, return_tensors='pt')
 
-def gen_steps_ans(tokenizer, pv_model, model, prompt, max_step_num, compare_baseline=False, device='cuda'):
+def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step_num, device='cuda', mode='org_single_step'):
+    #TODO: single step generation
+    #TODO: pv intervened single step generation
+    if mode == 'org_full_steps':
+        model.to(device)
+        chat = prefix + [{
+            'role': 'user',
+            'content': f'Question: {question}' + " Let's think step by step. At the end, you MUST write the answer as an integer after '####'.\n\n"
+        }]
+        gen_config = GenerationConfig(
+            max_new_tokens=300,
+            pad_token_id=tokenizer.eos_token_id,
+            return_dict_in_generate=True,
+        )
+        tokenized_prompt = tokenizer.apply_chat_template(chat, tokenize=True, return_tensors='pt').to(device)
+        # prompt = tokenizer.apply_chat_template(chat)
+        with torch.no_grad():
+            full_output_dict = model.generate(
+                tokenized_prompt, #already tensor (no need for input_ids)
+                gen_config,
+                tokenizer=tokenizer,
+                return_dict_in_generate=True,
+            )
+            full_sequence = tokenizer.decode(full_output_dict.sequences[0].tolist(), skip_special_tokens=True)
+            full_output = full_sequence.split("you MUST write the answer as an integer after '####'.\n\n")[-1]
+        # print(f'\n---\nfull_sequence: \n{full_sequence}\n---\nfull_output: \n{full_output}\n---\n')
+        pred_ans = extract_ans_from_response(full_output)
+        # print(f'\npred_ans: {pred_ans}')
+
+        pv_ans = None
+        pv_steps = None
+
+    elif mode == 'org_single_step':
+        model.to(device)
+        pred_ans = None
+        previous_steps = []
+        with torch.no_grad():
+            for step_id in range(max_step_num):
+                if pred_ans: 
+                    break
+                history = ''
+                for s in previous_steps:
+                    history += (s + '\n')
+                chat = prefix + [{
+                    'role': 'user',
+                    'content': f'Question: {question}\n\nAnswer(incomplete): {history}' + " Let's think step by step. At the end, you MUST write the answer as an integer after '####'.\n\n"
+                }]
+                gen_config = GenerationConfig(
+                    max_new_tokens=100,
+                    pad_token_id=tokenizer.eos_token_id,
+                    return_dict_in_generate=True,
+                )
+                tokenized_prompt = tokenizer.apply_chat_template(chat, tokenize=True, return_tensors='pt').to(device)
+                step_output_dict = model.generate(
+                    tokenized_prompt, #already tensor (no need for input_ids)
+                    gen_config,
+                    tokenizer=tokenizer,
+                    return_dict_in_generate=True,
+                )
+                step_sequence = tokenizer.decode(step_output_dict.sequences[0].tolist(), skip_special_tokens=True)
+
+
+    return pv_ans, pred_ans, pv_steps, full_output
+
+
+
+
+
+
+
+
+
+
+
+def gen_steps_ans(tokenizer, pv_model, model, prompt, max_step_num, compare_baseline=False, device='cuda', prefix_len=0):
     '''
     generate solution to the final answer step by step.
     for each step: 
@@ -660,13 +982,14 @@ def gen_steps_ans(tokenizer, pv_model, model, prompt, max_step_num, compare_base
         batch_size=4,
         do_sample=True,
         # top_k=8,
-        # temperature=1.0,
+        temperature=1.0,
         # repitition_penalty=1.2,
         max_new_tokens=100, 
         # early_stopping=True,
         pad_token_id=tokenizer.eos_token_id,
         output_hidden_states=True,
-        output_logits=True,
+        # output_logits=True,
+        stop_strings=['}$', ' }$', '}$.', ' }$.'],
         return_dict_in_generate=True, #return a ModelOutput class
     )
 
@@ -679,43 +1002,81 @@ def gen_steps_ans(tokenizer, pv_model, model, prompt, max_step_num, compare_base
         for step_idx in range(max_step_num):
             if pv_ans or org_ans:
                 break
-            pv_prompt = complete_prompt(tokenizer, prompt, pv_steps) #complete the full_prompt with the past steps and tokenize
-            pv_prompt = pv_prompt.to(device)
-            pv_start_t = time.time()
-            _, pv_output_dict = pv_model.generate(
-                pv_prompt, 
-                generation_config = gen_config,
-                unit_locations=None,      # set to None means intervention will be applied for each forward call
-                intervene_on_prompt=True, # intervention will be called for the prompt kv cache call
-                subspaces=[{"logging": False}], # other metadata
-            )
-            pv_spent = convert_time(pv_start_t)
-            print(f'        - Time spent on pv_model generation: {pv_spent[0]}:{pv_spent[1]}:{pv_spent[2]}, or {(time.time() - pv_start_t):.5f} secs')
-            pv_step, pv_ans = decode_step_ans(tokenizer, pv_output_dict['logits']) 
-            pv_steps.append(pv_step)
+            # pv_prompt = complete_prompt(tokenizer, prompt, pv_steps) #complete the full_prompt with the past steps and tokenize
+            # pv_prompt = pv_prompt.to(device)
+            # pv_start_t = time.time()
+            # _, pv_output_dict = pv_model.generate(
+            #     pv_prompt, 
+            #     generation_config = gen_config,
+            #     unit_locations=None,      # set to None means intervention will be applied for each forward call
+            #     intervene_on_prompt=True, # intervention will be called for the prompt kv cache call
+            #     subspaces=[{"logging": False}], # other metadata
+            # )
+            # pv_spent = convert_time(pv_start_t)
+            # print(f'        - Time spent on pv_model generation: {pv_spent[0]}:{pv_spent[1]}:{pv_spent[2]}, or {(time.time() - pv_start_t):.5f} secs')
+            # pv_step, pv_ans = decode_step_ans(tokenizer, pv_output_dict['logits']) 
+            # pv_steps.append(pv_step)
 
             if compare_baseline:
-                org_prompt = complete_prompt(tokenizer, prompt, org_steps)
+                org_text, org_prompt = complete_prompt(tokenizer, prompt, org_steps)
                 org_prompt = org_prompt.to(device)
                 org_start_t = time.time()
                 org_output_dict = model.generate(
                     org_prompt['input_ids'], 
-                    gen_config
+                    gen_config,
+                    tokenizer=tokenizer
                 )
-                org_spent = convert_time(org_start_t)
-                print(f'        - Time spent on org_model generation: {org_spent[0]}:{org_spent[1]}:{org_spent[2]}, or {(time.time() - org_start_t):.5f} secs')
-                org_step, org_ans = decode_step_ans(tokenizer, org_output_dict.logits) 
+                # org_spent = convert_time(org_start_t)
+                # print(f'        - Time spent on org_model generation: {org_spent[0]}:{org_spent[1]}:{org_spent[2]}, or {(time.time() - org_start_t):.5f} secs')
+                decoded_seq = tokenizer.decode(org_output_dict.sequences[0].tolist(), skip_special_tokens=True)
+                # if decoded_seq.startswith(org_text):
+                #     decoded_output = decoded_seq[len(org_text):]
+                # print(f'\n\n    - decoded decoded_output (from sequences): \n~~~~~~~\n{decoded_output}\n~~~~~~~\n') ##############
+                org_step, org_ans = decode_step_ans(tokenizer, org_output_dict.sequences[0].tolist()[prefix_len:]) #org_output_dict.logits 
+                # print(f'    - org_step[{step_idx}]: {org_step}')
                 org_steps.append(org_step)
 
-            # break ###########test
+            # break ###########test (single step and stop)
+
+
+
+
+
+        # # 测试单次generate完整steps的正确率
+        # tokenized_prompt = tokenizer(prompt, return_tensors='pt')
+        # tokenized_prompt = tokenized_prompt.to(device)
+        # gen_config = GenerationConfig(
+        #     batch_size=4,
+        #     temperature=1.0,
+        #     do_sample=True,
+        #     max_new_tokens=500, #the only config changed 
+        #     pad_token_id=tokenizer.eos_token_id,
+        #     return_dict_in_generate=True,
+        #     stop_strings=['}$.', ' }$.'],
+        # )
+        # test_output_dict = model.generate(
+        #     tokenized_prompt['input_ids'], # no previous steps
+        #     gen_config,
+        #     tokenizer=tokenizer
+        # )
+        # test_output = tokenizer.decode(test_output_dict.sequences[0].tolist()[-500:], skip_special_tokens=True)
+        # test_ans = extract_a(test_output, src='generated')
+
  
+
+
+
+
     # end of no_grad()
     pv_sol = ''
     for i, step in enumerate(pv_steps):
-        pv_sol += f'<Step {i}>: {step}\n'
+        pv_sol += f'Step{i}: {step}\n'
     org_sol = ''
     for i, step in enumerate(org_steps):
-        org_sol += f'<Step {i}>: {step}\n'
+        org_sol += f'Step{i}: {step}\n'
+
+    # pv_sol = test_output ###################
+    # pv_ans = test_ans ###################
 
     return pv_sol, pv_ans, org_sol, org_ans
 
