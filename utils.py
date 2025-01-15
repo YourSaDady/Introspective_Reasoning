@@ -895,26 +895,30 @@ def complete_prompt(tokenizer, prompt, past_steps): #return tokenized full_promp
     return full_prompt, tokenizer(full_prompt, return_tensors='pt')
 
 '''for gsm8k'''
-def find_curr_step(token_list): #full sequence list (including prompt)
+def find_curr_step(token_list, curr_idx, search_start = 0): #full sequence list (including prompt)
 
     #1. find the start of the output
-    try:
-        output_start = len(token_list) - 1 - token_list[::-1].index('assistant')
-    except ValueError:
-        output_start = 0
-        print(f'\n"assistant" not found in the decoded token list: \n_____________\n{token_list}\n_____________\n') 
+    if search_start == 0:
+        output_start = len(token_list) - 1 - token_list[::-1].index('assistant') 
+    else:
+        output_start = search_start
     output_list = token_list[output_start:]
-    for i in range(len(output_list)): #补丁
+    step_start = 3
+    for i in range(len(output_list)-1): #补丁
         if output_list[i].strip() == 'Step':
             output_list[i] = 'Step'
+            if output_list[i+1].strip() == str(curr_idx):
+                # print('\n!!!\nbingo\n!!!\n')
+                step_start = i+3
+                break
     #2. find the first generated step
     step_end_tok = {'.\n', '.\n\n', ' .\n', ' .\n\n', ' \n\n', '\n\n', '\n', ' \n', '.'} #必须要有换行符
     # print(f'\noutput_list: \n___\n{output_list}\n___\n')
-    try:
-        step_start = output_list.index('Step') + 3 #通常：'assistant', '', '\n\n', 'She', ' sells', ...
-    except ValueError:
-        # print('\n!!!\nThere is no "Step" token in the output\n!!!\n')
-        step_start = 3
+    # try:
+    #     step_start = output_list.index('Step') + 3 #通常：'assistant', '', '\n\n', 'She', ' sells', ...
+    # except ValueError:
+    #     # print('\n!!!\nThere is no "Step" token in the output\n!!!\n')
+    #     step_start = 3
     output_list = output_list[step_start:]
     # print(f'\noutput_list  (after): \n___\n{output_list}\n___\n')
     step_start += output_start
@@ -966,6 +970,7 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
         pred_ans = None
         previous_steps = []
         with torch.no_grad():
+            search_start = 0
             for step_id in range(max_step_num):
                 if pred_ans: 
                     break
@@ -982,7 +987,7 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                     {
                         'role': 'user',
                         # user content: examples + question + instruction
-                        'content': prefix + f" \nSolve the following Question step by step" + f'Question: {question}' #", Step0 to Step{len(previous_steps)-1} is already provided. Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n" 
+                        'content': prefix + f" \nSolve the following Question step by step" + f'\n\nQuestion: {question}' #", Step0 to Step{len(previous_steps)-1} is already provided. Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n" 
                     },
                     {
                         'role': 'assistant',
@@ -991,7 +996,7 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                     }
                 ]
 
-                print(f'\n___________\nstep{step_id} history:"{history}"\n')
+                # print(f'\n___________\nstep{step_id} history:"{history}"\n')
 
                 gen_config = GenerationConfig(
                     max_new_tokens=100,
@@ -1006,7 +1011,7 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                     path = './evaluate/full_prompt.txt'
                     with open(path, 'w') as f:
                         f.write(prompt)
-                    print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
+                    # print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
 
                 step_output_dict = model.generate(
                     tokenized_prompt, #already tensor (no need for input_ids)
@@ -1016,11 +1021,12 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                 )
                 step_sequence = tokenizer.decode(step_output_dict.sequences[0].tolist(), skip_special_tokens=True)
                 step_seq_list = [tokenizer.decode(token, skip_special_tokens=True) for token in step_output_dict.sequences[0].tolist() if token]
-                step_start, step_end = find_curr_step(step_seq_list)
+                step_start, step_end = find_curr_step(step_seq_list, step_id, search_start)
+                search_start = step_end
                 # print(f'\nstep_start: {step_start}, step_end: {step_end}\n')
                 full_output = step_seq_list[step_start:]
                 step_list = step_seq_list[step_start:step_end]
-                step = ''.join(step_list)
+                step = ''.join(step_list).strip(' \n') + '.'
                 previous_steps.append(step)
                 # pred_ans = step.split('####')[-1]
                 # if pred_ans == step:
@@ -1033,11 +1039,11 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                     pred_ans = step[ans_start:].strip(' .\n$')
                 else:
                     pred_ans = None
-                print(f'\nparsed step: "{step}", contains ans: {pred_ans}')
+                # print(f'\nparsed step: "{step}", contains ans: {pred_ans}')
                 # break #########one step
                     
-                # if step_id == 7:
-                #     break
+                if step_id == 7:
+                    break
             # print(f'\n***************\ndecoded sequence list: {step_seq_list}\n***************\n') #包含prompt的
         pv_ans = None
         pv_steps = None
