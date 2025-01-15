@@ -309,11 +309,13 @@ def eval_gsm8k(hf_path, eval_size=200):
         ans_list = re.split(r'(?<!\d)\.(?!\d)|,', ans) #然并卵
         ans_list = [s.strip() for s in ans_list if s.strip()]
         a = ''
-        for s in ans_list:
-            a += (s + '.\n')
+        for i, s in enumerate(ans_list):
+            a += (f'Step{i}: ' + s + '.\n')
         # a = a.rstrip('\n')
         a += '\n'
-        y = a.split('####')[1].strip(' .')
+        a_y = a.split('####')
+        y = a_y[1].strip(' .\n')
+        a = a_y[0] + f'The answer is {y}.\n\n' #不用gsm8k的格式（一次一个step时原本gsm8k的格式比较困难）
         return a, y
 
     eval_data = load_dataset(hf_path, 'main', split='test')
@@ -892,6 +894,41 @@ def complete_prompt(tokenizer, prompt, past_steps): #return tokenized full_promp
         # print(f'\n___full prompt___\n{full_prompt[:666]}\n\n...\n\n{full_prompt[-666:]}\n______________\n') ############
     return full_prompt, tokenizer(full_prompt, return_tensors='pt')
 
+'''for gsm8k'''
+def find_curr_step(token_list): #full sequence list (including prompt)
+
+    #1. find the start of the output
+    try:
+        output_start = len(token_list) - 1 - token_list[::-1].index('assistant')
+    except ValueError:
+        output_start = 0
+        print(f'\n"assistant" not found in the decoded token list: \n_____________\n{token_list}\n_____________\n') 
+    output_list = token_list[output_start:]
+    for i in range(len(output_list)): #补丁
+        if output_list[i].strip() == 'Step':
+            output_list[i] = 'Step'
+    #2. find the first generated step
+    step_end_tok = {'.\n', '.\n\n', ' .\n', ' .\n\n', ' \n\n', '\n\n', '\n', ' \n', '.'} #必须要有换行符
+    # print(f'\noutput_list: \n___\n{output_list}\n___\n')
+    try:
+        step_start = output_list.index('Step') + 3 #通常：'assistant', '', '\n\n', 'She', ' sells', ...
+    except ValueError:
+        # print('\n!!!\nThere is no "Step" token in the output\n!!!\n')
+        step_start = 3
+    output_list = output_list[step_start:]
+    # print(f'\noutput_list  (after): \n___\n{output_list}\n___\n')
+    step_start += output_start
+    step_end = step_start
+    for i in range(len(output_list)-1):
+        # print(f'token[{i}]: "{output_list[i].strip()}", token[{i+1}]: "{output_list[i+1].strip()}"')
+        # if i and output_list[i] == '.' and output_list[i+1] == ' \n':
+        if output_list[i] in step_end_tok and not output_list[i+1].strip().isdigit():
+            # print('\nbingo!!\n')
+            step_end += i+1
+            break
+    return step_start, step_end 
+
+
 def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step_num, device='cuda', mode='org_single_step'):
     #TODO: single step generation
     #TODO: pv intervened single step generation
@@ -933,18 +970,44 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                 if pred_ans: 
                     break
                 history = ''
-                for s in previous_steps:
-                    history += (s + '\n')
-                chat = prefix + [{
-                    'role': 'user',
-                    'content': f'Question: {question}\n\nAnswer(incomplete): {history}' + " Let's think step by step. At the end, you MUST write the answer as an integer after '####'.\n\n"
-                }]
+                for i, s in enumerate(previous_steps):
+                    history += (f'Step{i}: ' + s + '\n') #没有step index提示很难follow instruction
+
+                # chat = prefix + [{
+                #     'role': 'user',
+                #     'content': f'Question: {question}\n\nAnswer(incomplete): {history}' + f" \nGiven the incomplete reasoning steps, what is Step{len(previous_steps)}? Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n"
+                # }]
+
+                chat = [
+                    {
+                        'role': 'user',
+                        # user content: examples + question + instruction
+                        'content': prefix + f" \nSolve the following Question step by step" + f'Question: {question}' #", Step0 to Step{len(previous_steps)-1} is already provided. Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n" 
+                    },
+                    {
+                        'role': 'assistant',
+                        # assistant content: Step_0...Step_n-1
+                        'content': f'\n\nAnswer: \n{history}' + f'Step{len(previous_steps)}: '
+                    }
+                ]
+
+                print(f'\n___________\nstep{step_id} history:"{history}"\n')
+
                 gen_config = GenerationConfig(
                     max_new_tokens=100,
                     pad_token_id=tokenizer.eos_token_id,
                     return_dict_in_generate=True,
                 )
-                tokenized_prompt = tokenizer.apply_chat_template(chat, tokenize=True, return_tensors='pt').to(device)
+                # tokenized_prompt = tokenizer.apply_chat_template(chat, tokenize=True, return_tensors='pt').to(device)
+                prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>') #让assistant content的hiddens与生成的hiddens连贯
+                tokenized_prompt = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
+                
+                if step_id == 5:
+                    path = './evaluate/full_prompt.txt'
+                    with open(path, 'w') as f:
+                        f.write(prompt)
+                    print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
+
                 step_output_dict = model.generate(
                     tokenized_prompt, #already tensor (no need for input_ids)
                     gen_config,
@@ -952,7 +1015,34 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                     return_dict_in_generate=True,
                 )
                 step_sequence = tokenizer.decode(step_output_dict.sequences[0].tolist(), skip_special_tokens=True)
-
+                step_seq_list = [tokenizer.decode(token, skip_special_tokens=True) for token in step_output_dict.sequences[0].tolist() if token]
+                step_start, step_end = find_curr_step(step_seq_list)
+                # print(f'\nstep_start: {step_start}, step_end: {step_end}\n')
+                full_output = step_seq_list[step_start:]
+                step_list = step_seq_list[step_start:step_end]
+                step = ''.join(step_list)
+                previous_steps.append(step)
+                # pred_ans = step.split('####')[-1]
+                # if pred_ans == step:
+                #     pred_ans = None
+                # else:
+                #     pred_ans = pred_ans.strip(' .')
+                ans_start = step.find('The answer is ')
+                if ans_start != -1:
+                    ans_start += len('The answer is ')
+                    pred_ans = step[ans_start:].strip(' .\n$')
+                else:
+                    pred_ans = None
+                print(f'\nparsed step: "{step}", contains ans: {pred_ans}')
+                # break #########one step
+                    
+                # if step_id == 7:
+                #     break
+            # print(f'\n***************\ndecoded sequence list: {step_seq_list}\n***************\n') #包含prompt的
+        pv_ans = None
+        pv_steps = None
+        # pred_ans = None
+        full_output = '\n'.join(previous_steps)
 
     return pv_ans, pred_ans, pv_steps, full_output
 

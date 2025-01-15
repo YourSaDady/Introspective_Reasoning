@@ -97,10 +97,15 @@ def main():
     elif args.dataset_name == 'gsm8k':
         eval_set = eval_gsm8k(data_path)
         prefix = []
-        for qna in eval_set[:args.n_shot]:
-            prefix.append({"role": "user", "content": f"Question: {qna['q']}"})
-            prefix.append({"role": "assistant", "content": f"Answer: {qna['a']}"})
-        prefix_len = tokenizer.apply_chat_template(prefix, tokenize=True, return_tensors='pt').size(-1)
+        # for qna in eval_set[:args.n_shot]:
+        #     prefix.append({"role": "user", "content": f"Question: {qna['q']}"})
+        #     prefix.append({"role": "assistant", "content": f"Answer: {qna['a']}"})
+        # prefix_len = tokenizer.apply_chat_template(prefix, tokenize=True, return_tensors='pt').size(-1)
+        
+        n_shots = [f"Question: {qna['q']}\n\nAnswer: {qna['a']}\n\n\n" for qna in eval_set[:args.n_shot]]
+        prefix = ''.join(n_shots)
+        prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.size(-1)
+        
         print(f'\nprefix_len for gsm8k: {prefix_len}\n')
     print(f'Eval set size: {len(eval_set)}')
     # eval_loader = DataLoader(eval_set, batch_size=4, shuffle=False) #TODO: batchalize not implemented
@@ -178,7 +183,7 @@ def main():
     org_acc_count = 0
     invalid_count = 0
     with open(stat_path, 'w') as file:
-        for i, sample  in enumerate(tqdm(eval_set)):
+        for i, sample  in enumerate(tqdm(eval_set[args.n_shot:])):
             if args.dataset_name == 'math_shepherd':
                 question = prefix + sample['question'] #tokenized full_prompt (except the past steps)
                 answer = sample['answer'] #int
@@ -212,7 +217,10 @@ def main():
             pv_acc_count += (pv_ans == answer and answer)
             org_acc_count += (org_ans == answer and answer is None)
             file.write(json.dumps(dict) + '\n')
+
             break ##########################test
+            if i == 10:
+                break ##########################test
         # end of sample iter
         result= {
             'Acc': {'original': round(org_acc_count / (len(eval_set)-invalid_count), 5), 'intervened': round(pv_acc_count / (len(eval_set)-invalid_count), 5)}
