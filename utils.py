@@ -1007,10 +1007,10 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                 prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>') #让assistant content的hiddens与生成的hiddens连贯
                 tokenized_prompt = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
                 
-                if step_id == 5:
-                    path = './evaluate/full_prompt.txt'
-                    with open(path, 'w') as f:
-                        f.write(prompt)
+                # if step_id == 5:
+                #     path = './evaluate/full_prompt.txt'
+                #     with open(path, 'w') as f:
+                #         f.write(prompt)
                     # print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
 
                 step_output_dict = model.generate(
@@ -1026,7 +1026,8 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                 # print(f'\nstep_start: {step_start}, step_end: {step_end}\n')
                 full_output = step_seq_list[step_start:]
                 step_list = step_seq_list[step_start:step_end]
-                step = ''.join(step_list).strip(' \n') + '.'
+                step = ''.join(step_list).strip(' \n')
+                step = step.rstrip('.') + '.'
                 previous_steps.append(step)
                 # pred_ans = step.split('####')[-1]
                 # if pred_ans == step:
