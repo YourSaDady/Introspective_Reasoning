@@ -1042,8 +1042,8 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
                 # print(f'\nparsed step: "{step}", contains ans: {pred_ans}')
                 # break #########one step
                     
-                if step_id == 7:
-                    break
+                # if step_id == 7:
+                #     break
             # print(f'\n***************\ndecoded sequence list: {step_seq_list}\n***************\n') #包含prompt的
         pv_ans = None
         pv_steps = None

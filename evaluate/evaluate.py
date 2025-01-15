@@ -218,9 +218,9 @@ def main():
             org_acc_count += (org_ans == answer and answer is None)
             file.write(json.dumps(dict) + '\n')
 
-            break ##########################test
-            if i == 10:
-                break ##########################test
+            # break ##########################test
+            # if i == 10:
+            #     break ##########################test
         # end of sample iter
         result= {
             'Acc': {'original': round(org_acc_count / (len(eval_set)-invalid_count), 5), 'intervened': round(pv_acc_count / (len(eval_set)-invalid_count), 5)}
