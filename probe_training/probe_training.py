@@ -45,8 +45,8 @@ from probes import Classifier, InterventionModule
 #     return train_set, validate_set
 
 '''限制intervention module输入的step hidden states长度为100'''
-def pad(array, fix_len=100):
-    if array.shape[0] > 100: #truncate the step length to be exa
+def pad(array, fix_len=256):
+    if array.shape[0] > fix_len: #truncate the step length to be exa
         array = array[:fix_len, :]
     pad_len = fix_len - array.shape[0]
     try:
@@ -56,6 +56,32 @@ def pad(array, fix_len=100):
         return torch.Tensor([-1]) 
     padded_array = torch.cat((array, paddings), axis=0)
     return padded_array
+
+def build_hf_dataloader(hf_path, hf_batch_size=100, loader_batch_size=4, device='cuda', total_samples=500):
+    all_h_h = [] #final step unit
+    for b_start in  tqdm(range(0, total_samples, hf_batch_size)):
+        dir_name = f'sample{b_start}-{b_start+hf_batch_size-1}'
+        try:
+            hf_batch_data = load_dataset(hf_path, split='train', data_dir=dir_name)
+            for sample in hf_batch_data:
+                new_hs_prime = [pad(torch.tensor(hs_prime, dtype=torch.float32)).to(device) for hs_prime in sample['h_prior']]
+                new_hs = [pad(torch.tensor(hs, dtype=torch.float32)).to(device) for hs in sample['h_posterior']]
+                all_h_h += [{'hs_prime': hs_prime, 'hs': hs} for (hs_prime, hs) in zip(new_hs_prime, new_hs)]
+        #     try:
+        #         assert len(all_hs) == len(all_hs_prime) 
+        #     except AssertionError:
+        #         print(f'Not matched length in hf_batch: "{dir_name}", with len(all_hs) = {len(all_hs)} and len(all_hs_prime) = {len(all_hs_prime)}')
+        except:
+            print(f'\nall hf batches are loaded! last sample: "sample{b_start}"\n')
+    return DataLoader(all_h_h, batch_size=4, shuffle=False), len(all_h_h)
+    
+        
+
+
+    print(f'\nloaded dataset with {len(dataset)} lines') #20
+    print(f'\nsample0 ["h_prior"] length: \n___\n{len(dataset[0]["h_prior"])}\n___\n') #num_steps
+    print(f'\nsample0 ["chosen_nodes"] length: \n___\n{len(dataset[0]["chosen_nodes"])}\n___\n')
+    print(f'\nsample0 ["chosen_nodes"][0]: \n___\n{dataset[0]["chosen_nodes"][0]}\n___\n')
 
 def build_data_loaders(train_path, validate_path, device, classify=False):
     train_set = []
@@ -117,6 +143,8 @@ def build_data_loaders(train_path, validate_path, device, classify=False):
 
     return train_loader, validate_loader, len(train_set), len(validate_set)
 
+
+
 def h_m_s(start_t):
     spent = time.time() - start_t
     hrs = int(spent // 3600)
@@ -130,7 +158,7 @@ def main():
     parser.add_argument('--model_name', type=str, default='llama3.1-8b-instruct')
     parser.add_argument('--dataset_name', type=str, default='math-shepherd')
     parser.add_argument('--split_num', type=int, default=10, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
-    parser.add_argument('--load_from_local', type=bool, default=True, help='source of the loaded data. Default to be False')
+    parser.add_argument('--load_from_local', type=bool, default=False, help='source of the loaded data. Default to be False')
     parser.add_argument('--probe_type', type=str, default='classifier', help='Available probe types: [\'classifier\', \'intervention_module\']')
     parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
     parser.add_argument('--positive_samples_only', type=bool, default=True, help='Valid when probe_type == "intervention_module". Whether to train on positive-labeled samples only')
@@ -176,6 +204,11 @@ def main():
         train_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_train_set.jsonl'
         validate_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_validation_set.jsonl'
         train_loader, validate_loader, train_size, validate_size = build_data_loaders(train_path, validate_path, device, classify=args.positive_samples_only)
+    elif args.probe_type == 'intervention_module' and not args.load_from_local:
+        if args.dataset_name == 'dpo':
+            hf_path = f'Lo-Fi-gahara/intervener_layer{args.layer}_{args.split_num}k_dpo'
+        train_loader, sample_size = build_hf_dataloader(hf_path, hf_batch_size=20)
+        print(f'\nTotal samples: ({sample_size})\nTotal batches: ({len(train_loader)})\n')
     else:
         raise ValueError(f'Arguments are not implemented - probe_type: [{args.probe_type}] and load_from_local: [{args.load_from_local}]')
     print(f'Time spent on loading dataset: {h_m_s(start_t)}')
@@ -192,7 +225,7 @@ def main():
         for aggregate in all_aggregate_method:
             if args.probe_type == 'intervention_module' and type == 'lstm':
                 if args.test:
-                    save_path = './trained_probes/interventor_lstm_test.pth'
+                    save_path = './trained_probes/interventor_lstm_test_.pth'
                     prior_path = save_path
                 else:
                     save_path = f'./trained_probes/interventor_lstm_{args.split_num}k_classify-{args.positive_samples_only}.pth'
@@ -276,7 +309,7 @@ def main():
                     if 0.0 < running_loss < 0.04:
                         break
             else: #intervention module
-                print(f'- Total train size: {train_size}, validate size: {validate_size}') #classify的话显示positive samples数量
+                # print(f'- Total train size: {train_size}, validate size: {validate_size}') #classify的话显示positive samples数量
                 epochs = 1 #确保可以出现early stop
                 for _ in range(epochs):
                     print(f'\n***\nnow start training intervention module with epoch ({_})...\n***\n')

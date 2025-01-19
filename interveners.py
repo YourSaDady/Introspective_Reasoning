@@ -7,21 +7,25 @@ def wrapper(intervener):
         return intervener(*args, **kwargs)
     return wrapped
 
-class Collector():
+class Collector(pv.ConstantSourceIntervention):
     collect_state = True
     collect_action = False  
-    def __init__(self, head, multiplier, prefix_len=0):
+    def __init__(self, head, multiplier, prefix_len=0, **kwargs):
+        super().__init__(
+            **kwargs,
+            keep_last_dim=True, #to get token-level tokenized reprs
+         )
         self.head = head
         self.states = []
         self.actions = []
         self.called_counter = 0
         self.prefix_len = prefix_len
-        print(f'\ninside collector: self.prefix_len = {self.prefix_len}, self.head = {self.head}\n')
+        # print(f'\ninside collector: self.prefix_len = {self.prefix_len}, self.head = {self.head}\n')
     def reset(self):
         self.states = []
         self.actions = []
         self.called_counter = 0
-    def __call__(self, b, s, subspaces=None): 
+    def forward(self, b, s, subspaces=None): 
         if subspaces['logging']:
             print(f"(called {self.called_counter} times) incoming reprs shape:", b.shape)
         self.called_counter += 1
@@ -66,7 +70,7 @@ class ClassifyIntervene(pv.ConstantSourceIntervention):
         alpha = self.classifier(cls_input).item() # the classifier outputs a scalar, served as intervention strength (0~1)
         intervene_margin = self.intervener(itv_input)[-1:] #torch.Size([4096])
         new_base = base.clone()
-        new_base[-1] = new_base[-1] + alpha * intervene_margin
+        new_base[-1] = new_base[-1] - alpha * intervene_margin
         self.cache[-1] = new_base
         if self.called_counter == 1:
             print(f'\ninside first foward call: \n  - cls_input.shape: {cls_input.shape}\n  - itv_input.shape: {itv_input.shape}\n  - intervene_margin.shape: {intervene_margin.shape}')

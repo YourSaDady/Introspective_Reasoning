@@ -106,9 +106,9 @@ def extract_a(text, src='label'): #can be integer or any form of non-integer! re
     return answer
 
 def extract_dpo_s_a(text): 
-    prefix = 'The reasoning steps are:\n\n'
-    start_idx = text.find(prefix)
-    text = text[start_idx:]
+    # prefix = 'The reasoning steps are:\n\n'
+    # start_idx = text.find(prefix)
+    # text = text[start_idx:]
     steps = text.split('\n')
     ans_start = steps[-1].find('\\boxed{')
     ans_start += len('\\boxed{')
@@ -160,6 +160,29 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
 
     return question, steps, labels
 
+def build_examples(examples, dataset_name='dpo'):
+    nshot = ''
+    for sample in examples:
+        q = sample['q']
+        if dataset_name == 'dpo':
+            steps = sample['chosen_s']
+        else:
+            raise NotImplementedError
+        nshot += f'\n\nQuestion: {q}\n\nAnswer: \n'
+        for i, step in enumerate(steps):
+            nshot += f'Step{i}: {step}\n'
+    return nshot
+
+def build_user_prompt(q, e): #return I+E+Q
+    instruction = 'Solve the following Question step by step.'
+    return f'{e}\n\n{instruction}\n\n<Question>: {q}\n\n'
+
+def build_assistant_prompt(steps, curr_id):
+    history = ''
+    for i, step in enumerate(steps[:curr_id]):
+        history += f'Step{i}: {step}\n'
+    return f'\nAnswer: \n{history}Step{curr_id}: '
+
 def build_prompt(problem, steps, curr_idx, examples):
     history = ''
     for i, step in enumerate(steps[:curr_idx+1]):
@@ -171,6 +194,7 @@ def build_prompt(problem, steps, curr_idx, examples):
     #__________________________________________________________
     
     return f'{sys_prompt}<Examples>: {examples}\n\n{instruction}<Problem>: {problem}\n\n<Solution Steps>: {history}', f'{sys_prompt}<Examples>: {examples}\n\n{instruction}' # (I + O in FactCheckMate), (the input prefix to be ignored when reading the representations)
+
 
 def build_prompt_eval(sys_prompt, instruction, question, examples): 
     history = ''
@@ -439,26 +463,32 @@ def tokenized_math_shepherd(dataset, tokenizer, n_shot): #always read 1k origina
                     validate_prompts.append(prompt)
                     validate_labels.append(label)
             count += 1###############
-            # if count == 20: ##############
-            #     break######################
+            if count == 20: ##############
+                break######################
     return prefix_len, train_prompts, train_labels, validate_prompts, validate_labels
 import json
 import csv
 import math
-def tokenized_dpo_4_intervene(path, tokenizer, n_shot, train_rate=1.0): # the returned train_pairs and validate_pairs are 2D arrays of samples[steps[{chosen_infos..., rejected_infos...}]]
+# 用多少samples要声明
+def reformat_dpo_4_intervene(path, n_shot, total_samples=5000, train_rate=1.0, start=0): # the returned train_pairs and validate_pairs are 2D arrays of samples[steps[{chosen_infos..., rejected_infos...}]]
     # count the total number of samples
-    lines = 0
-    with open(path, 'r') as file:
-        for line in file:
-            lines += 1
+    if total_samples == -1:
+        lines = 0
+        with open(path, 'r') as file:
+            for line in file:
+                lines += 1
+    else:
+        lines = total_samples
     train_num = math.floor(lines * train_rate)
     train_pairs = []
     validate_pairs = []
-    examples = ''
+    examples = []
     prefix_len = 0
     valid_count = 0
     with open(path, 'r') as file:
         for i, line in enumerate(tqdm(file)):
+            if i < start:
+                continue
             sample = json.loads(line.strip())
             chosen_weights = sample['chosen_weights']
             rejected_weights = sample['rejected_weights']
@@ -467,55 +497,36 @@ def tokenized_dpo_4_intervene(path, tokenizer, n_shot, train_rate=1.0): # the re
             q = q[q_start:]
             chosen_s, chosen_a = extract_dpo_s_a(sample['chosen'][0]['content'])
             rejected_s, rejected_a = extract_dpo_s_a(sample['rejected'][0]['content'])
+            chosen_s = [step for step in chosen_s if (step.strip(' .\n') and step != 'The reasoning steps are:')]
             if i == 0:
                 print(f'\n***\nchosen_s ({len(chosen_s)}): \n{chosen_s}\nrejected_s ({len(rejected_s)}): \n{rejected_s}\n***\n')
             
             if not len(chosen_s) == len(rejected_s): #some samples have inequal lengths of chosen and rejected steps
-                print(f'Inequal! chosen_s: {len(chosen_s)}, rejected_s: {len(rejected_s)}')
+                # print(f'Inequal! chosen_s: {len(chosen_s)}, rejected_s: {len(rejected_s)}')
                 continue
             else:
                 valid_count += 1
             
-            if valid_count < n_shot:
-                q = f'\n\nProblem{valid_count}: {q}\n'
-                s = '\nSolution steps: \n'
-                for j, step in enumerate(chosen_s):
-                    s += f'Step{j}: {step}\n'
-                example = q + s + '\n'
-                examples += example
-                continue
-
-            if valid_count == 5000: ################### test
-                print(f'{valid_count}/{i}/{train_num} total lines have passed')
-                break ###################
-            sample = []
-            for step_id in range(len(chosen_s)-1):
-                chosen_prompt_curr, prefix = build_prompt(q, chosen_s, step_id, examples)
-                rejected_prompt_curr, prefix = build_prompt(q, rejected_s, step_id, examples)
-                # chosen_prompt_curr = tokenizer(chosen_prompt_curr, return_tensors='pt')
-                # rejected_prompt_curr = tokenizer(rejected_prompt_curr, return_tensors='pt')
-                chosen_step_len = tokenizer(f'Step{i}: {chosen_s[step_id]}\n', return_tensors='pt').input_ids.shape[-1]
-                rejected_step_len = tokenizer(f'Step{i}: {rejected_s[step_id]}\n', return_tensors='pt').input_ids.shape[-1]
-                if step_id == 0 and i == n_shot: #需要忽视representation的地方, 只计算一次
-                    prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.shape[-1]
-                    print(f'Inside tokenized_dpo_4_intervene: prefix_len = {prefix_len}') #3466
-                sample_dict = {
-                    'chosen_prompt_curr': chosen_prompt_curr,
-                    'chosen_step_len': chosen_step_len,
-                    'chosen_weights': chosen_weights,
-                    'rejected_prompt_curr': rejected_prompt_curr,
-                    'rejected_step_len': rejected_step_len,
-                    'rejected_weights': rejected_weights,
-                }
-                sample.append(sample_dict)
             
-            if i < train_num:
+            sample = {
+                'q': q,
+                'chosen_s': chosen_s, #list
+                'rejected_s': rejected_s, #list
+                'chosen_w': chosen_weights,
+                'rejected_w': rejected_weights,
+            }
+            
+            if valid_count <= n_shot:
+                examples.append(sample)
+            elif valid_count <= (n_shot + train_num):
                 train_pairs.append(sample)
-            else:
+                # break####################test
+            elif valid_count <= (lines + n_shot):
                 validate_pairs.append(sample)
+            else: # examples不算在total_samples里
+                break
 
-
-    return prefix_len, train_pairs, validate_pairs
+    return examples, train_pairs, validate_pairs
 
 def tokenized_math_shepherd_4_intervene(dataset, tokenizer, n_shot): #wrap by samples
     prefix_len = 0
@@ -829,6 +840,7 @@ def get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_le
             unit_locations=None,
             # unit_locations={"sources->base": (None, [[[base_unit_location]]])}, #dim0: num of collectors? dim1: collector_idx? dim2: token_dim
             # unit_locations={"base": ([[[0,1,2,3]]])}, # [[a,b,c]] is [3, 1, 4096]
+            subspaces=[{'logging':False}],
             intervene_on_prompt=True, #False（default）时，base_unit_location只有=0时有效
             generation_config = gen_config,
         )
@@ -856,8 +868,13 @@ def get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_le
     '''通过pyvene collector收集指定layer的hidden states'''
     for i, collector in enumerate(collectors): #遍历所有观测的layers (setting是只观测一个)
         if collector.collect_state: #true by default 
-            states_per_gen = torch.stack(collector.states, axis=0)#.cpu().numpy() # (92, 4096) #all heads on each layer by default, stack all token steps (except the first from input)
-            # print(f'states_per_gen.shape[0]: {states_per_gen.shape[0]}') #<= max_new_tokens, eg. 66
+            try: 
+                states_per_gen = torch.stack(collector.states, axis=0)
+            except RuntimeError:
+                states_per_gen = torch.cat(collector.states, dim=1)#.cpu().numpy() # (92, 4096) #all heads on each layer by default, stack all token steps (except the first from input)
+                # print(f'states_per_gen.shape[0]: {states_per_gen.shape[0]}') #<= max_new_tokens, eg. 66
+                if states_per_gen.size(0) == 1:
+                    states_per_gen.squeeze(0)
             states_per_gen = states_per_gen[prefix_len:, :]  #remove the unwanted hidden states corresponding to the sys_prompt and n-shots 
             head_wise_hidden_states.append(states_per_gen) #why head_wise? 应该是layer-wise!
         else:
@@ -895,7 +912,7 @@ def complete_prompt(tokenizer, prompt, past_steps): #return tokenized full_promp
     return full_prompt, tokenizer(full_prompt, return_tensors='pt')
 
 '''for gsm8k'''
-def find_curr_step(token_list, curr_idx, search_start = 0): #full sequence list (including prompt)
+def find_curr_step(token_list, curr_idx, search_start=0, log=False): #full sequence list (including prompt)
 
     #1. find the start of the output
     if search_start == 0:
@@ -913,7 +930,8 @@ def find_curr_step(token_list, curr_idx, search_start = 0): #full sequence list 
                 break
     #2. find the first generated step
     step_end_tok = {'.\n', '.\n\n', ' .\n', ' .\n\n', ' \n\n', '\n\n', '\n', ' \n', '.'} #必须要有换行符
-    # print(f'\noutput_list: \n___\n{output_list}\n___\n')
+    if log:
+        print(f'\noutput_list: \n___\n{output_list}\n___\n')
     # try:
     #     step_start = output_list.index('Step') + 3 #通常：'assistant', '', '\n\n', 'She', ' sells', ...
     # except ValueError:
@@ -932,10 +950,111 @@ def find_curr_step(token_list, curr_idx, search_start = 0): #full sequence list 
             break
     return step_start, step_end 
 
+'''在一个iterable里找一个sub-iterable的区间'''
+def find_subiter_range(full_iter, subiter):
+    subiter = subiter[4:-1] #the first and last token can mismatch due to prefix ' '
+    subiter_len = len(subiter)
+    for i in range(len(full_iter) - subiter_len + 1):
+        if full_iter[i:i+subiter_len] == subiter:
+            start_idx = i
+            end_idx = i + subiter_len
+            return start_idx-4, end_idx+1 # move back again
+    return None, None # no found
 
-def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step_num, device='cuda', mode='org_single_step'):
-    #TODO: single step generation
-    #TODO: pv intervened single step generation
+def collect_pv_hs(tokenizer, pv_model, collector, chat, curr_step, prefix, hs_type='I-Sn', device='cuda', subspace=None):
+    '''
+    Collect the step hiddens for intervention.
+    Four types of collection:
+    'all':                      Input + Step_0...Step_n-1 + Step_n
+    'all_previous':             Input + Step_0...Step_n-1
+    'curr':                     Step_n
+    'all_previous_steps':       Step_0...Step_n-1
+
+    return:
+    all_hs_seqs: a list storing all sequences of required hiddens from all collectors
+    nodes: a list of useful token indicies: [user_chat_len, assistant_start, first_forward_len, curr_start, curr_end] 
+
+    '''
+    #1. prepare
+    # pv_model.set_device(device) #AttributeError: 'function' object has no attribute 'to'
+    prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>')
+
+    # if subspace['screenshot'] == 2:
+    #     save_path = './get_activations/chosen_prompt.txt'
+    #     with open(save_path, 'w') as f:
+    #         f.write(prompt)
+    #     print(f'\nscreenshot on curr_step=2 saved to {save_path}\n')
+    
+    tokenized_prompt = tokenizer(prompt, return_tensors='pt') #mapping!
+    gen_config = GenerationConfig(
+        max_new_tokens=100,
+        pad_token_id=tokenizer.eos_token_id,
+        return_dict_in_generate=True,
+    )
+    #2. find current step's token range & other indicies
+    # print(f'\ntokenized_prompt.shape: {tokenized_prompt.input_ids.shape}\n') # torch.Size([1, 2189])
+    all_previous_tokens = tokenized_prompt.input_ids.tolist()[0]
+    # curr_step = curr_step.rstrip(' .\n') + '.\n' #unify the last token to be '.\n' (627)
+    curr_step_tokens = tokenizer(curr_step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
+    curr_start, curr_end = find_subiter_range(all_previous_tokens, curr_step_tokens) #不知道直接从input_ids list层面能否parse
+    if curr_start == None or curr_end == None:
+        print('\n!!!\nThe current step token seuqences is not found in the prompt token sequence\n!!!\n')
+        print(f'\nall_previous_tokens ({len(all_previous_tokens)}): \n...{all_previous_tokens[-20:]}\n{[tokenizer.decode(token) for token in all_previous_tokens[-20:]]}\n')
+        print(f'\ncurr_step_tokens ({len(curr_step_tokens)}): \n...{curr_step_tokens[-20:]}\n{[tokenizer.decode(token) for token in curr_step_tokens[-20:]]}\n')
+        raise ValueError
+    user_chat_len = len(tokenizer.apply_chat_template([chat[0]], tokenize=True, return_tensors='pt').tolist()[0]) # user chat 的长度
+    assistant_start = [tokenizer.decode(token) for token in tokenized_prompt.input_ids.tolist()[0]].index('assistant') # 第一个'assistant'的index
+    prefix_tokens = tokenizer(prefix, return_tensors='pt').input_ids.tolist()[0][1:]
+    prefix_start, prefix_end = find_subiter_range(all_previous_tokens, prefix_tokens)
+    #3. generate
+    tokenized_prompt = tokenized_prompt.to(device)
+    _, full_output_dict = pv_model.generate(
+        tokenized_prompt, 
+        generation_config = gen_config,
+        unit_locations=None,      
+        intervene_on_prompt=True, 
+        subspaces=[{"logging": False}],
+    )
+
+    #4. collect & parse
+    all_hs_seqs = []
+    if collector.collect_state:
+        states_per_gen = torch.cat(collector.states, dim=1)
+        states_per_gen = states_per_gen.squeeze(0) # I+O_len, 4096
+        all_len = collector.states[0].size(1) #input to curr_step
+        collector.reset()
+    if hs_type == 'all':
+        all_hs_seqs.append(states_per_gen[prefix_end:all_len, :])
+    elif hs_type == 'all_previous':
+        all_hs_seqs.append(states_per_gen[prefix_end:curr_end, :])
+    elif hs_type == 'curr':
+        all_hs_seqs.append(states_per_gen[curr_start:curr_end, :])
+    elif hs_type == 'all_previous_steps':
+        all_hs_seqs.append(states_per_gen[prefix_end:curr_start, :])
+    else:
+        raise NotImplementedError('\n!!!\nThe hidden sequences collection type is not defined\n!!!\n')
+
+    #test
+    seq_tokens = full_output_dict.sequences[0].tolist()
+    parsed_input = tokenizer.decode(seq_tokens[prefix_end:all_len], skip_special_tokens=True)
+    parsed_curr_step = tokenizer.decode(seq_tokens[curr_start:curr_end], skip_special_tokens=True)
+    # if subspace['screenshot'] == 2:
+    #     print(f'\nstates_per_gen.shape: {states_per_gen.shape}')
+    #     print(f'\nlen(seq_tokens): {len(seq_tokens)}, states_per_gen.size(0): {states_per_gen.size(0)}')
+        # print(f'\nparsed_input ({all_len-prefix_end}): \n---\n{parsed_input}\n---\n')
+        # print(f'\ncurr step: "{curr_step}"\nparsed curr step: "{parsed_curr_step}"\n')
+    # print(f'\nuser_chat_len: {user_chat_len}, assistant_start: {assistant_start}, first_forward_len: {all_len}, curr_start: {curr_start}, curr_end: {curr_end}\n')
+    
+    nodes = [user_chat_len, assistant_start, all_len, curr_start, curr_end, prefix_start, prefix_end]
+        #          [1(错了),      2160,        2189,      2169,       2186,      30,          2080]
+    return all_hs_seqs, nodes
+
+
+
+
+
+
+def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step_num, device='cuda', mode='crichic', compare_with_cot=True):
     if mode == 'org_full_steps':
         model.to(device)
         chat = prefix + [{
@@ -965,93 +1084,185 @@ def gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step
         pv_ans = None
         pv_steps = None
 
-    elif mode == 'org_single_step':
-        model.to(device)
-        pred_ans = None
-        previous_steps = []
-        with torch.no_grad():
-            search_start = 0
-            for step_id in range(max_step_num):
-                if pred_ans: 
-                    break
-                history = ''
-                for i, s in enumerate(previous_steps):
-                    history += (f'Step{i}: ' + s + '\n') #没有step index提示很难follow instruction
+    else:
+        if mode == 'org_single_step' or compare_with_cot:
+            org_start = time.time()
+            model.to(device)
+            cot_ans = None
+            previous_steps = []
+            with torch.no_grad():
+                search_start = 0
+                for step_id in range(max_step_num):
+                    if cot_ans: 
+                        break
+                    history = ''
+                    for i, s in enumerate(previous_steps):
+                        history += (f'Step{i}: ' + s + '\n') #没有step index提示很难follow instruction
 
-                # chat = prefix + [{
-                #     'role': 'user',
-                #     'content': f'Question: {question}\n\nAnswer(incomplete): {history}' + f" \nGiven the incomplete reasoning steps, what is Step{len(previous_steps)}? Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n"
-                # }]
+                    # chat = prefix + [{
+                    #     'role': 'user',
+                    #     'content': f'Question: {question}\n\nAnswer(incomplete): {history}' + f" \nGiven the incomplete reasoning steps, what is Step{len(previous_steps)}? Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n"
+                    # }]
 
-                chat = [
-                    {
-                        'role': 'user',
-                        # user content: examples + question + instruction
-                        'content': prefix + f" \nSolve the following Question step by step" + f'\n\nQuestion: {question}' #", Step0 to Step{len(previous_steps)-1} is already provided. Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n" 
-                    },
-                    {
-                        'role': 'assistant',
-                        # assistant content: Step_0...Step_n-1
-                        'content': f'\n\nAnswer: \n{history}' + f'Step{len(previous_steps)}: '
-                    }
-                ]
+                    chat = [
+                        {
+                            'role': 'user',
+                            # user content: examples + question + instruction
+                            'content': prefix + f" \nSolve the following Question step by step" + f'\n\nQuestion: {question}' #", Step0 to Step{len(previous_steps)-1} is already provided. Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n" 
+                        },
+                        {
+                            'role': 'assistant',
+                            # assistant content: Step_0...Step_n-1
+                            'content': f'\n\nAnswer: \n{history}' + f'Step{len(previous_steps)}: '
+                        }
+                    ]
 
-                # print(f'\n___________\nstep{step_id} history:"{history}"\n')
+                    # print(f'\n___________\nstep{step_id} history:"{history}"\n')
 
-                gen_config = GenerationConfig(
-                    max_new_tokens=100,
-                    pad_token_id=tokenizer.eos_token_id,
-                    return_dict_in_generate=True,
-                )
-                # tokenized_prompt = tokenizer.apply_chat_template(chat, tokenize=True, return_tensors='pt').to(device)
-                prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>') #让assistant content的hiddens与生成的hiddens连贯
-                tokenized_prompt = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
-                
-                # if step_id == 5:
-                #     path = './evaluate/full_prompt.txt'
-                #     with open(path, 'w') as f:
-                #         f.write(prompt)
-                    # print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
-
-                step_output_dict = model.generate(
-                    tokenized_prompt, #already tensor (no need for input_ids)
-                    gen_config,
-                    tokenizer=tokenizer,
-                    return_dict_in_generate=True,
-                )
-                step_sequence = tokenizer.decode(step_output_dict.sequences[0].tolist(), skip_special_tokens=True)
-                step_seq_list = [tokenizer.decode(token, skip_special_tokens=True) for token in step_output_dict.sequences[0].tolist() if token]
-                step_start, step_end = find_curr_step(step_seq_list, step_id, search_start)
-                search_start = step_end
-                # print(f'\nstep_start: {step_start}, step_end: {step_end}\n')
-                full_output = step_seq_list[step_start:]
-                step_list = step_seq_list[step_start:step_end]
-                step = ''.join(step_list).strip(' \n')
-                step = step.rstrip('.') + '.'
-                previous_steps.append(step)
-                # pred_ans = step.split('####')[-1]
-                # if pred_ans == step:
-                #     pred_ans = None
-                # else:
-                #     pred_ans = pred_ans.strip(' .')
-                ans_start = step.find('The answer is ')
-                if ans_start != -1:
-                    ans_start += len('The answer is ')
-                    pred_ans = step[ans_start:].strip(' .\n$')
-                else:
-                    pred_ans = None
-                # print(f'\nparsed step: "{step}", contains ans: {pred_ans}')
-                # break #########one step
+                    gen_config = GenerationConfig(
+                        max_new_tokens=100,
+                        pad_token_id=tokenizer.eos_token_id,
+                        return_dict_in_generate=True,
+                    )
+                    # tokenized_prompt = tokenizer.apply_chat_template(chat, tokenize=True, return_tensors='pt').to(device)
+                    prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>') #让assistant content的hiddens与生成的hiddens连贯
+                    tokenized_prompt = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
                     
-                # if step_id == 7:
-                #     break
-            # print(f'\n***************\ndecoded sequence list: {step_seq_list}\n***************\n') #包含prompt的
-        pv_ans = None
-        pv_steps = None
-        # pred_ans = None
-        full_output = '\n'.join(previous_steps)
+                    # if step_id == 5:
+                    #     path = './evaluate/full_prompt.txt'
+                    #     with open(path, 'w') as f:
+                    #         f.write(prompt)
+                        # print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
 
-    return pv_ans, pred_ans, pv_steps, full_output
+                    step_output_dict = model.generate(
+                        tokenized_prompt, #already tensor (no need for input_ids)
+                        gen_config,
+                        tokenizer=tokenizer,
+                        return_dict_in_generate=True,
+                    )
+
+                    step_sequence = tokenizer.decode(step_output_dict.sequences[0].tolist(), skip_special_tokens=True)
+                    step_seq_list = [tokenizer.decode(token, skip_special_tokens=True) for token in step_output_dict.sequences[0].tolist() if token]
+                    step_start, step_end = find_curr_step(step_seq_list, step_id, search_start)
+                    search_start = step_end
+                    # print(f'\nstep_start: {step_start}, step_end: {step_end}\n')
+                    full_output = step_seq_list[step_start:]
+                    step_list = step_seq_list[step_start:step_end]
+                    step = ''.join(step_list).strip(' \n')
+                    step = step.rstrip('.') + '.'
+                    previous_steps.append(step)
+                    # pred_ans = step.split('####')[-1]
+                    # if pred_ans == step:
+                    #     pred_ans = None
+                    # else:
+                    #     pred_ans = pred_ans.strip(' .')
+                    ans_start = step.find('The answer is ')
+                    if ans_start != -1:
+                        ans_start += len('The answer is ')
+                        cot_ans = step[ans_start:].strip(' .\n$')
+                    else:
+                        cot_ans = None
+                    # print(f'\nparsed step: "{step}", contains ans: {pred_ans}')
+                    # break #########one step
+                        
+                    # if step_id == 7:
+                    #     break
+            pv_ans = None
+            pv_steps = None
+            cot_steps = '\n'.join(previous_steps)
+
+            org_spent = convert_time(org_start)
+
+
+        if mode == 'crychic':
+            # print('\n+++\nCRYCHIC\n+++\n') #########
+            pv_start = time.time()
+            pv_model.set_device(device)
+            pv_ans = None
+            previous_steps = []
+            with torch.no_grad():
+                search_start = 0
+                for step_id in range(max_step_num):
+                    if pv_ans: 
+                        break
+                    history = ''
+                    for i, s in enumerate(previous_steps):
+                        history += (f'Step{i}: ' + s + '\n') #没有step index提示很难follow instruction
+
+                    chat = [
+                        {
+                            'role': 'user',
+                            # user content: examples + question + instruction
+                            'content': prefix + f" \nSolve the following Question step by step" + f'\n\nQuestion: {question}' #", Step0 to Step{len(previous_steps)-1} is already provided. Generate Step{len(previous_steps)} in a COMPACT way same as the previous complete answers, and if you reach a final result at this step, you MUST write the result after 'The answer is: '.\n\n" 
+                        },
+                        {
+                            'role': 'assistant',
+                            # assistant content: Step_0...Step_n-1
+                            'content': f'\n\nAnswer: \n{history}' + f'Step{len(previous_steps)}: '
+                        }
+                    ]
+
+                    # print(f'\n___________\nstep{step_id} history:"{history}"\n')
+
+                    gen_config = GenerationConfig(
+                        max_new_tokens=100,
+                        pad_token_id=tokenizer.eos_token_id,
+                        return_dict_in_generate=True,
+                    )
+                    # tokenized_prompt = tokenizer.apply_chat_template(chat, tokenize=True, return_tensors='pt').to(device)
+                    prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>') #让assistant content的hiddens与生成的hiddens连贯
+                    tokenized_prompt = tokenizer(prompt, return_tensors='pt').to(device)
+                    
+                    # if step_id == 5:
+                    #     path = './evaluate/full_prompt.txt'
+                    #     with open(path, 'w') as f:
+                    #         f.write(prompt)
+                        # print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
+
+                    _, step_output_dict = pv_model.generate(
+                        tokenized_prompt, 
+                        generation_config = gen_config,
+                        unit_locations=None,      # set to None means intervention will be applied for each forward call
+                        intervene_on_prompt=True, # intervention will be called for the prompt kv cache call
+                        subspaces=[{"logging": False}], # other metadata
+                    )
+
+                    step_sequence = tokenizer.decode(step_output_dict.sequences[0].tolist(), skip_special_tokens=True)
+                    step_seq_list = [tokenizer.decode(token, skip_special_tokens=True) for token in step_output_dict.sequences[0].tolist() if token]
+                    step_start, step_end = find_curr_step(step_seq_list, step_id, search_start)
+                    search_start = step_end
+                    # print(f'\nfor CRYCHIC: \nstep_start: {step_start}, step_end: {step_end}\n')
+                    full_output = step_seq_list[step_start:]
+                    step_list = step_seq_list[step_start:step_end]
+                    step = ''.join(step_list).strip(' \n')
+                    step = step.rstrip('.') + '.'
+                    previous_steps.append(step)
+                    # pred_ans = step.split('####')[-1]
+                    # if pred_ans == step:
+                    #     pred_ans = None
+                    # else:
+                    #     pred_ans = pred_ans.strip(' .')
+                    ans_start = step.find('The answer is ')
+                    if ans_start != -1:
+                        ans_start += len('The answer is ')
+                        pv_ans = step[ans_start:].strip(' .\n$')
+                    else:
+                        pv_ans = None
+                    # print(f'\nparsed step: "{step}", contains ans: {pv_ans}')
+                    # break #########one step
+                        
+                    # if step_id == 7:
+                    #     break
+
+            pv_steps = '\n'.join(previous_steps)
+            if compare_with_cot == False:
+                cot_ans = None
+                cot_steps = None
+
+            pv_spent = convert_time(pv_start)
+
+
+    return pv_ans, cot_ans, pv_steps, cot_steps, org_spent, pv_spent
 
 
 
@@ -1071,7 +1282,7 @@ def gen_steps_ans(tokenizer, pv_model, model, prompt, max_step_num, compare_base
         - generates with original and pyvene models
         - get decoded steps (original and intervened)
     '''
-    pv_model.set_device(device) #classifier和intervener应该也放到device了？
+    pv_model.set_device(device) #classifier和intervener应该也放到device了？ (这里重复了)
     if compare_baseline:
         model.to(device) 
 

@@ -22,7 +22,7 @@ import argparse
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 
 # Specific pyvene imports
-from utils import get_llama_step_reps_pyvene, tokenized_math_shepherd_4_intervene, tokenized_dpo_4_intervene
+from utils import get_llama_step_reps_pyvene, tokenized_math_shepherd_4_intervene, reformat_dpo_4_intervene, upload_batch_to_HF, build_examples, build_user_prompt, build_assistant_prompt, collect_pv_hs
 from interveners import wrapper, Collector
 import pyvene as pv
 
@@ -72,9 +72,10 @@ def main():
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--n_shot', type=int, default=8, help='The number of examples in the Input prompt')
     parser.add_argument('--get_hidden_states', type=bool, default=True, help='get hidden states instead for training the probe') #added
-    parser.add_argument('--split_num', type=int, default=5, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
+    parser.add_argument('--split_num', type=int, default=1, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
     parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
     parser.add_argument('--local_save', type=bool, default=False, help='set True to save locally, otherwise upload to the HF dataset. Default False.')
+    parser.add_argument('--hf_batch_size', type=int, default=20, help='how many samples in one push to the HF, default to be 100.')
     parser.add_argument('--device', type=int, default=0)
     args = parser.parse_args()
 
@@ -92,9 +93,8 @@ def main():
         dataset = f'./features/MATH-Shepherd_part_{args.split_num}.csv'
         formatter = tokenized_math_shepherd_4_intervene
     elif args.dataset_name == 'dpo':
-        print('\nHERE!!!!\n') #################
         dataset = f'./features/241127-1.json'
-        formatter = tokenized_dpo_4_intervene
+        formatter = reformat_dpo_4_intervene
     else: 
         raise ValueError("Invalid dataset name")
 
@@ -104,51 +104,45 @@ def main():
         with open(f'./features/{args.model_name}_{args.dataset_name}_categories.pkl', 'wb') as f:
             pickle.dump(categories, f)
     else:  #TODO:下面的variable会很大
-        prefix_len, train_prompt_pairs, validate_prompt_pairs = formatter(dataset, tokenizer, args.n_shot) # for math-shepherd, prompt = I+O (problem + steps so-far), already tokenized; 2D arrays: samples[sample_steps[{till_curr, one_look_ahead}]]
-        print(f'\nprefix_len: {prefix_len}\n')
+        examples, train_prompt_pairs, validate_prompt_pairs = formatter(dataset, args.n_shot, total_samples=1000, start=(args.split_num*1000-1000)) # for math-shepherd, prompt = I+O (problem + steps so-far), already tokenized; 2D arrays: samples[sample_steps[{till_curr, one_look_ahead}]]
         # assert (len(train_prompt_pairs) + args.n_shot) == 4*len(validate_prompt_pairs) #train:validate = 4:1############################
         print(f'train set size: {len(train_prompt_pairs)}, validate set size: {len(validate_prompt_pairs)}')
         train_steps_count = 0
         validate_steps_count = 0
         for sample in train_prompt_pairs:
-            train_steps_count += len(sample)
+            train_steps_count += len(sample['chosen_s'])
         for sample in validate_prompt_pairs:
-            validate_steps_count += len(sample)
+            validate_steps_count += len(sample['chosen_s'])
         print(f' - Training set: total samples: {len(train_prompt_pairs)}, total steps: {train_steps_count}\n - Validation set: total samples: {len(validate_prompt_pairs)}, total steps: {validate_steps_count}') #34467 (5k samples, ~7 steps per sample)
-
 
     '''
     2. build pv model
     '''
-    collectors = []
-    pv_config = []
-    for layer_id, layer in enumerate(range(model.config.num_hidden_layers)): 
-        if args.get_hidden_states: #只收集指定层的mlp output(会包含prompt吗？是不是没有head概念？)
-            if layer == args.layer:
-                print(f'\n^^^\nThe layer we look into: {layer_id}\n^^^\n')
-                collector = Collector(multiplier=0, head=-1) #head=-1 to collect all head activations, multiplier doens't matter
-                collectors.append(collector) #每层一个collector收集所有heads的states和actions (activations包含这俩)
-                pv_config.append({
-                    "component": f"model.layers[{layer}].post_attention_layernorm.output", #.mlp.output 现在收集的是transformer layer的output, 对应representations
-                    "intervention": wrapper(collector), #“收集”作为intervention function
-                })
-            else: 
-                continue
-        else:
-            collector = Collector(multiplier=0, head=-1)
-            collectors.append(collector) 
-            pv_config.append({
-                "component": f"model.layers[{layer}].self_attn.o_proj.input", # hidden states? torch.Size([1, 156, 4096])
-                "intervention": wrapper(collector), #让collector可以接受*args, **kwargs? 伪intervention??
-            })
+    collector = Collector(multiplier=0, head=-1)
+    pv_config = pv.IntervenableConfig(
+        representations=[{
+            'layer': args.layer,
+            'component': f"model.layers[{args.layer}].post_attention_layernorm.output",
+            "low_rank_dimension": 1, #useless?
+            'intervention': wrapper(collector)
+        }]
+    )
+    
     collected_model = pv.IntervenableModel(pv_config, model) #subclass of nn.Module
+    # collected_model.set_device(device)
 
     '''
     3. Get sample hidden states and upload
     '''
     if args.get_hidden_states:
+        #build n-shot examples
+        if args.dataset_name == 'dpo':
+            nshot = build_examples(examples, dataset_name='dpo') #a string for nshot
+
         print("\nGetting hidden states\n...")
         start_t = time.time()
+        hf_batch = []
+        hf_path = f'Lo-Fi-gahara/intervener_layer{args.layer}_{args.split_num}k_dpo'
         for is_validate, all_sample_pairs in enumerate([train_prompt_pairs, validate_prompt_pairs]): #train / valiate set
             all_samples = []
             if not is_validate:
@@ -169,67 +163,117 @@ def main():
                 labels = []
                 h_priors = []
                 h_posteriors = []
-                for step in sample:
+                all_chosen_nodes = []
+                all_rejected_nodes = []
+                q = sample['q']
+                chosen_s = sample['chosen_s']
+                rejected_s = sample['rejected_s']
+                subspace = {'screenshot': 0}
+                assert len(chosen_s) == len(rejected_s)
+                for step_id in range(len(chosen_s)-1): #每次prompt内包含curr step, 然后parse curr step对应的hiddens
                     if args.dataset_name == 'math_shepherd':
                         label = step['label']
                         prompt_curr = step['till_curr_step']
                         prompt_lookahead = step['lookahead_step']
                         curr_step_len = step['curr_step_len']
+                        gen_hs_1, original_hs, _, input_len = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_curr, device)
+                        gen_hs_2, intervened_hs, curr_step_range, input_len = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_lookahead, device)
                     elif args.dataset_name == 'dpo':
                         label = None
-                        prompt_curr = step['chosen_prompt_curr']
-                        post_step_len = step['chosen_step_len']
-                        prompt_lookahead = step['rejected_prompt_curr']
-                        pre_step_len = step['rejected_step_len']
+                        # prompt_curr = step['chosen_prompt_curr'] #untokenized， 
+                        # post_step_len = step['chosen_step_len'] 
+                        # prompt_lookahead = step['rejected_prompt_curr']
+                        # pre_step_len = step['rejected_step_len']
+                        prefix = f'{nshot}\n\nSolve the following Question step by step.\n\n'
+                        chosen_chat = [
+                            {'role': 'user', 'content': build_user_prompt(q, nshot)},
+                            {'role': 'assistant', 'content': build_assistant_prompt(chosen_s, step_id+1)}, #prompt contains curr step
+                        ]
+                        chosen_step = chosen_s[step_id]
+                        # nodes: [user_chat_len, assistant_start, first_forward_len, curr_start, curr_end]
+                        subspace['screenshot'] = step_id
 
+                        hs, chosen_nodes = collect_pv_hs(tokenizer, collected_model, collector, chosen_chat, chosen_step, prefix, hs_type='all', subspace=subspace) #默认收集所有token hiddens
+                        rejected_chat = [
+                            {'role': 'user', 'content': build_user_prompt(q, nshot)},
+                            {'role': 'assistant', 'content': build_assistant_prompt(rejected_s, step_id+1)}, #prompt contains curr step
+                        ]
+                        rejected_step = rejected_s[step_id]
+                        hs_prime, rejected_nodes = collect_pv_hs(tokenizer, collected_model, collector, rejected_chat, rejected_step, prefix, hs_type='all', subspace=subspace)
 
-                    gen_hs_1, original_hs, _, input_len = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_curr, device)
-                    gen_hs_2, intervened_hs, curr_step_range, input_len = get_llama_step_reps_pyvene(tokenizer, collected_model, collectors, prefix_len, prompt_lookahead, device)
+                    
                     
                     if args.dataset_name == 'math_shepherd':
                         hs = gen_hs_1[-curr_step_len:].tolist() #ground truth hidden states
                         hs_prime = gen_hs_2[curr_step_range[0]:curr_step_range[1]].tolist()
                     elif args.dataset_name == 'dpo':
-                        hs = gen_hs_1[input_len-post_step_len:input_len]
-                        hs_prime = gen_hs_2[input_len-pre_step_len:input_len]
-                    # padded_hs = pad(hs)
-                    # padded_hs_prime = pad(hs_prime)
+                        # padded_hs = pad(hs)
+                        # padded_hs_prime = pad(hs_prime)
                         if i == 0:    
-                            print(f'gen_hs_1 shape: {gen_hs_1.shape}, gen_hs_2 shape: {gen_hs_2.shape}') # 
-                            print(f'hs shape: {hs.shape}, hs_prime shape: {hs_prime.shape}') 
-                        hs = hs.tolist()
-                        hs_prime = hs_prime.tolist()
+                            print(f'hs shape: {hs[0].shape}, hs_prime shape: {hs_prime[0].shape}')  #index是collector的; torch.Size([1, 2338, 4096]), torch.Size([1, 2416, 4096])
+                        hs = hs[0].squeeze(0).tolist()
+                        hs_prime = hs_prime[0].squeeze(0).tolist()
                         # print(f'after padding, hs shape: {padded_hs.shape}, hs_prime shape: {padded_hs_prime.shape}')
                         # print(f'collector_hs shape: {collector_hs.shape}') # (65, 4096)
                     h_priors.append(hs_prime)
                     h_posteriors.append(hs)
                     labels.append(label)
+                    all_chosen_nodes.append(chosen_nodes)
+                    all_rejected_nodes.append(rejected_nodes)
                     # if i == 4:
                     #     break#################
-                if i == 0:
-                    print(f'\n\nlabels: {labels}\n\n')
-                sample_dict = {
-                    'h_prior': h_priors,
-                    'h_posterior': h_posteriors,
-                    'labels': labels
-                }
+                # if i == 0:
+                #     print(f'\n\nlabels: {labels}\n\n')
+                if args.dataset_name == 'math_shepherd':
+                    sample_dict = {
+                        'h_prior': h_priors, #list of arrays: (seq_len, 4096)
+                        'h_posterior': h_posteriors,
+                        'labels': labels
+                    }
+                elif args.dataset_name == 'dpo':
+                    sample_dict = {
+                        'h_prior': h_priors, #list of arrays: (seq_len, 4096)
+                        'h_posterior': h_posteriors,
+                        # 'chosen_nodes': {
+                        #     'user_chat_len': chosen_nodes[0],
+                        #     'assistant_start': chosen_nodes[1],
+                        #     'all_len': chosen_nodes[2],
+                        #     'curr_start': chosen_nodes[3],
+                        #     'curr_end': chosen_nodes[4]
+                        # },
+                        'chosen_nodes': all_chosen_nodes,
+                        # 'rejected_nodes': {
+                        #     'user_chat_len': rejected_nodes[0],
+                        #     'assistant_start': rejected_nodes[1],
+                        #     'all_len': rejected_nodes[2],
+                        #     'curr_start': rejected_nodes[3],
+                        #     'curr_end': rejected_nodes[4]
+                        # }
+                        'rejected_nodes': all_rejected_nodes,
+                    }
+
                 if h_priors == [] or h_posteriors == []:
                     print('\n!!!\nError: h_priors or h_posteriors is empty!! Skip.\n!!!\n')
                     error_count += 1
                     continue
                 sample_data = Dataset.from_dict(sample_dict)
+
+                # return#########################
                 if not args.local_save:
                     if args.dataset_name == 'math_shepherd':
                         sample_data.push_to_hub(f'Lo-Fi-gahara/intervene_{args.split_num}k', split=split, max_shard_size="1GB", data_dir=f'{dir_name}sample{i}') #upload a single sample to HF
                     elif args.dataset_name == 'dpo':
-                        print(f'pushing sample {i} to the HF Hub...')
-                        sample_data.push_to_pub(f'Lo-Fi-gahara/intervene_dpo')
+                        hf_batch.append(sample_dict)
+                        if (i+1) % args.hf_batch_size == 0 or i+1 == len(all_sample_pairs): #batch is full or the last batch
+                            batch_name = f'sample{i+1-len(hf_batch)}-{i}'
+                            upload_batch_to_HF(hf_batch, hf_path, split=split, batch_name=batch_name)
+                            hf_batch.clear()
                 else: ###################
                     # convert2JSONserializable(sample_dict)
                     all_samples.append(sample_dict)
 
-                if i == 10:
-                    break #####################
+                # if i == 10: #####################
+                #     break #####################
 
 
 
@@ -239,8 +283,6 @@ def main():
                         json.dump(sample, f)
                         f.write('\n')
                 print(f'\nDataset saved to {save_path}\n')
-            else: #########################
-                print(f'Dataset uploaded to HF.\n')
             print(f'Total error encountered: {error_count}')
 
         spent = time.time() - start_t

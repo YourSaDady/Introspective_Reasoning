@@ -61,6 +61,7 @@ def main():
     parser.add_argument('--n_shot', type=int, default=8, help='number of examples given in the Input. Represeantions are ignored during classifying and intervention')
     parser.add_argument('--split_num', type=int, default=1, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
     parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
+    parser.add_argument('--mode', type=str, default='crychic', help='other options: org_single_step')
     parser.add_argument('--classifier_path', type=str, default='./trained_probes/layer3_lstm_llama3.1_8b_instruct_16_math_shepherd_2k_best84.json', help='state_dict (json) path to the classifier')
     parser.add_argument('--intervention_module_path', type=str, default='./trained_probes/interventor_lstm_10k_classify-True.pth', help='state_dict path to the intervention module')
     parser.add_argument('--compare_baseline', type=bool, default=True, help='whether compare with baseline. default to be True')
@@ -104,7 +105,7 @@ def main():
         
         n_shots = [f"Question: {qna['q']}\n\nAnswer: {qna['a']}\n\n\n" for qna in eval_set[:args.n_shot]]
         prefix = ''.join(n_shots)
-        prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.size(-1)
+        prefix_len = tokenizer(prefix, return_tensors='pt').input_ids.size(-1) #单纯的exaples部分的
         
         print(f'\nprefix_len for gsm8k: {prefix_len}\n')
     print(f'Eval set size: {len(eval_set)}')
@@ -140,7 +141,7 @@ def main():
         state_dict = torch.load(interventor_path)
         intervener.load_state_dict(state_dict)
     except:
-        raise ValueError(f"The specified classifier save_path: {classifier_path} does not exist!")
+        raise ValueError(f"The specified classifier save_path: {interventor_path} does not exist!")
     spent = convert_time(start_t)
     print(f'- Time spent on loading probes: {spent[0]}:{spent[1]}:{spent[2]}, or {(time.time() - start_t):.5f} secs')
 
@@ -195,8 +196,9 @@ def main():
                 all_ans.append(answer)
             elif args.dataset_name == 'gsm8k':
                 question = sample['q']
+                ground_truth_steps = sample['a']
                 answer = sample['y']
-                pv_ans, org_ans, pv_steps, org_steps = gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step_num)
+                pv_ans, org_ans, pv_steps, org_steps, org_spent, pv_spent = gen_gsm8k(tokenizer, question, pv_model, model, prefix, prefix_len, max_step_num, mode=args.mode)
 
             if i == 0:
                 print(f'\n***\n - pv_steps: \n{pv_steps}\n - pv_ans: [{pv_ans}]\n - org_steps: \n{org_steps}\n - org_ans: [{org_ans}]\n***\n')
@@ -207,20 +209,24 @@ def main():
                 'org_ans': org_ans,
                 'org_correct': (org_ans == answer),
                 'answer': answer,
+                'org_spent': f'{org_spent[0]}:{org_spent[1]}:{org_spent[2]}',
+                'pv_spent': f'{pv_spent[0]}:{pv_spent[1]}:{pv_spent[2]}',
                 'pv_solution': pv_steps,
                 'org_solution': org_steps,
+                'ground_truth_solution': ground_truth_steps,
             }
             if args.dataset_name == 'math-shepherd':
                 dict['question'] = question[prefix_seq_len:]
             elif args.dataset_name == 'gsm8k':
                 dict['question'] = question
-            pv_acc_count += (pv_ans == answer and answer)
-            org_acc_count += (org_ans == answer and answer is None)
+            if answer != None:
+                pv_acc_count += (pv_ans == answer)
+                org_acc_count += (org_ans == answer)
             file.write(json.dumps(dict) + '\n')
 
             # break ##########################test
-            # if i == 10:
-            #     break ##########################test
+            if i == 20:
+                break ##########################test
         # end of sample iter
         result= {
             'Acc': {'original': round(org_acc_count / (len(eval_set)-invalid_count), 5), 'intervened': round(pv_acc_count / (len(eval_set)-invalid_count), 5)}

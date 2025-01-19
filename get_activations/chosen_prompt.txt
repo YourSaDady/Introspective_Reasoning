@@ -1,0 +1,152 @@
+<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+Cutting Knowledge Date: December 2023
+Today Date: 26 Jul 2024
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Question: The question: Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Weng earns $12 an hour for babysitting.
+Step1: Yesterday, she only worked 50 minutes.
+Step2: Since there are 60 minutes in one hour, she worked 50 / 60 of an hour.
+Step3: 50 / 60 = 5/6 of an hour.
+Step4: She earns $12 for 1 hour.  So she earns 12 * (5/6) dollars.
+Step5: 12 * 5 = 60, and 60 / 6 = 10.
+Step6: The answer is: $\boxed{10}$.
+
+
+Question: The question: Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Betty needs 100 dollars for the wallet.
+Step1: She has only half of the money she needs.
+Step2: So she has 100 / 2 = 50 dollars.
+Step3: Her parents gave her 15 dollars.
+Step4: Her grandparents gave her twice as much as her parents, so that is 15 * 2 = 30 dollars.
+Step5: In total, she got 15 + 30 = 45 dollars from her parents and grandparents.
+Step6: Now she has 50 + 45 = 95 dollars.
+Step7: To buy the wallet, she needs 100 dollars. She has 95 dollars.
+Step8: So she needs 100 - 95 = 5 dollars more.
+Step9: The answer is: $\boxed{5}$.
+
+
+Question: The question: Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Betty needs 100 dollars for the wallet.
+Step1: She has only half of it, which is 100 / 2 = 50 dollars.
+Step2: Her parents gave her 15 dollars.
+Step3: Her grandparents gave her twice as much as her parents, which is 2 * 15 = 30 dollars.
+Step4: So, in total, she received 15 + 30 = 45 dollars from her parents and grandparents.
+Step5: She now has 50 + 45 = 95 dollars.
+Step6: To buy the wallet, she needs 100 dollars. 
+Step7: So she still needs 100 - 95 = 5 dollars.
+Step8: The answer is: \boxed{5}.
+
+
+Question: The question: Julie is reading a 120-page book. Yesterday, she was able to read 12 pages and today, she read twice as many pages as yesterday. If she wants to read half of the remaining pages tomorrow, how many pages should she read?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Yesterday, Julie read 12 pages.
+Step1: Today, she read twice as many pages as yesterday, so she read 2 * 12 = 24 pages.
+Step2: The total number of pages she read is 12 + 24 = 36 pages.
+Step3: She started with a 120-page book and read 36 pages. 
+Step4: So the number of pages she has left is 120 - 36 = 84 pages.
+Step5: She wants to read half of these remaining pages tomorrow.
+Step6: Half of 84 is 84 / 2 = 42.
+Step7: The answer is: \boxed{42}.
+
+
+Question: The question: Julie is reading a 120-page book. Yesterday, she was able to read 12 pages and today, she read twice as many pages as yesterday. If she wants to read half of the remaining pages tomorrow, how many pages should she read?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Julie started with a 120-page book.
+Step1: Yesterday, she read 12 pages.
+Step2: Today, she read twice as many pages as yesterday, which is 12 * 2 = 24 pages.
+Step3: So in total, she read 12 + 24 = 36 pages.
+Step4: The number of pages she has left is 120 - 36 = 84 pages.
+Step5: She wants to read half of the remaining pages tomorrow.
+Step6: Half of 84 pages is 84 / 2 = 42 pages.
+Step7: The answer is: \boxed{42}.
+
+
+Question: The question: Tina makes $18.00 an hour.  If she works more than 8 hours per shift, she is eligible for overtime, which is paid by your hourly wage + 1/2 your hourly wage.  If she works 10 hours every day for 5 days, how much money does she make?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Tina makes $18.00 an hour.
+Step1: If she works more than 8 hours per shift, she is eligible for overtime.
+Step2: Overtime is paid by your hourly wage + 1/2 your hourly wage. So overtime pay is 18 + 9 = 27 dollars an hour.
+Step3: She worked 10 hours each day for 5 days.
+Step4: For the first 8 hours per day, she makes 8 * 18 = 144 dollars.
+Step5: For the remaining 2 hours per day, she makes 2 * 27 = 54 dollars.
+Step6: She made 144 dollars per day for 5 days, so that is 5 * 144 = 720 dollars.
+Step7: She also made 54 dollars per day for 5 days, so that is 5 * 54 = 270 dollars.
+Step8: In total, she made 720 + 270 = 990 dollars.
+Step9: The answer is: $\boxed{990}$.
+
+
+Question: The question: A deep-sea monster rises from the waters once every hundred years to feast on a ship and sate its hunger. Over three hundred years, it has consumed 847 people. Ships have been built larger over time, so each new ship has twice as many people as the last ship. How many people were on the ship the monster ate in the first hundred years?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Let's represent the number of people on the first ship as x.
+Step1: Since each new ship has twice as many people as the last ship, the number of people on the second ship is 2x, and the number of people on the third ship is 2(2x) = 4x.
+Step2: There are a total of 3 ships, and the monster consumed 847 people over 300 years.
+Step3: The total number of people consumed is equal to the sum of the number of people on each ship:
+Step4: x (first ship) + 2x (second ship) + 4x (third ship) = 847
+Step5: Combine the x terms:
+Step6: 7x = 847
+Step7: Divide both sides by 7:
+Step8: x = 847 / 7
+Step9: x = 121
+Step10: Since x represents the number of people on the first ship, we have found the answer.
+Step11: The answer is: \boxed{121}.
+
+
+Question: The question: Tobias is buying a new pair of shoes that costs $95. He has been saving up his money each month for the past three months. He gets a $5 allowance a month. He also mows lawns and shovels driveways. He charges $15 to mow a lawn and $7 to shovel. After buying the shoes, he has $15 in change. If he mows 4 lawns, how many driveways did he shovel?
+Please directly output the reasoning steps.
+
+
+Answer: 
+Step0: Tobias wants to buy a pair of shoes that costs $95.
+Step1: He had some money left after buying the shoes, which is $15.
+Step2: So he must have had 95 + 15 = 110 dollars before buying the shoes.
+Step3: He got a $5 allowance each month, for 3 months. That's 5 * 3 = 15 dollars.
+Step4: He also earns money from mowing lawns ($15 per lawn) and shoveling driveways ($7 per driveway).
+Step5: He mowed 4 lawns, so he earned 4 * 15 = 60 dollars from mowing lawns.
+Step6: Let x be the number of driveways he shoveled. He earned 7 * x dollars from shoveling driveways.
+Step7: In total, he made 15 + 60 + 7x dollars. 
+Step8: He had 110 dollars before buying the shoes.
+Step9: 15 + 60 + 7x = 110.
+Step10: Subtract 75 from both sides:
+Step11: 7x = 35.
+Step12: Divide both sides by 7:
+Step13: x = 5.
+Step14: The answer is: \boxed{5}.
+
+
+Solve the following Question step by step.
+
+<Question>: The question: James creates a media empire.  He creates a movie for $2000.  Each DVD cost $6 to make.  He sells it for 2.5 times that much.  He sells 500 movies a day for 5 days a week.  How much profit does he make in 20 weeks?
+Please directly output the reasoning steps.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Answer: 
+Step0: The reasoning steps are:
+Step1: 
+Step2: James creates a movie for $2000. Each DVD cost $6 to make.
+Step3:
