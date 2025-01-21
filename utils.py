@@ -93,10 +93,10 @@ def extract_a(text, src='label'): #can be integer or any form of non-integer! re
         text = text[start_index:]
         text_list = text.split('\n')
         line = text_list[0]
-        print(f'the line containing the answer: [{line}], splited from {text_list}') ############
+        # print(f'the line containing the answer: [{line}], splited from {text_list}') ############
         end_index = line.find(suffix)
-        print(f'end_index: {end_index}')
-        print(f'text[:end_index]: {line[:end_index]}')
+        # print(f'end_index: {end_index}')
+        # print(f'text[:end_index]: {line[:end_index]}')
         answer = line[:end_index].strip(' ')
         # if "frac" in answer:
         #     answer.rstrip('}$.')
@@ -138,13 +138,13 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
     except:
         steps = ['']
     labels = []
-    for step in steps:
-        step.strip(' ')
+    for i, step in enumerate(steps):
+        step = step.strip(' ')
         if step.endswith('+'):
             labels.append('+')
         elif step.endswith('-'):
             labels.append('-')
-        step.rstrip(' -+')
+        steps[i] = step.rstrip('-+') ############
     # Note: the last step containing "The answer is: ..." always has '-' label
     labels.append('-')
 
@@ -175,7 +175,7 @@ def build_examples(examples, dataset_name='dpo'):
 
 def build_user_prompt(q, e): #return I+E+Q
     instruction = 'Solve the following Question step by step.'
-    return f'{e}\n\n{instruction}\n\n<Question>: {q}\n\n'
+    return f'{e}\n\n{instruction}\n\nQuestion: {q}\n\n'
 
 def build_assistant_prompt(steps, curr_id):
     history = ''
@@ -357,6 +357,390 @@ def eval_gsm8k(hf_path, eval_size=200):
         eval_set.append(qna)
     return eval_set
 
+def build_nshot_examples(data_name, split_num, n_shot):
+    if data_name == 'math_shepherd':
+        data_path = f'./features/MATH-Shepherd_part_{split_num}.csv'
+    else:
+        raise NotImplementedError
+    nshot = ''
+    with open(data_path, newline='') as csvfile:
+        csvreader = csv.DictReader(csvfile)
+        for i, row in enumerate(csvreader):
+            if i == n_shot:
+                break
+            if data_name == 'math_shepherd':
+                label = row['label']
+                question, steps, _ = extract_q_s_l(label)
+                answer = extract_a(label)
+                nshot += f'\n\nQuestion: {question}\n\nAnswer: \n'
+                for j, step in enumerate(steps):
+                    step = step.rstrip('.\n')
+                    nshot += f'Step{j}: {step}.\n'
+                nshot += f'The answer is: {answer}.\n'
+
+    return None, {'nshot': nshot}
+
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from tqdm import trange
+def online_training(dataset_name, tokenizer, collect_model, collector, probes, config, device='cuda'):
+    #______hyper params______
+    split_nums = 3 #split1 and 2
+    n_shot = config['n_shot']
+    examples = config['examples']
+    hiddens_range = config['hiddens_range']
+    type_2_idx = {'I': 0, '-3': 1, '-2': 2, '-1': 3, 'I+O': 4}  #hard-coded for the default FactCheckMate settings
+    use_template = config['use_template'] if config['use_template'] else True
+    max_samples = config['max_samples'] if config['max_samples'] else -1 ###############
+    stat_prefix = config['stat_prefix']
+    training_stat_path = f'{stat_prefix}/running_losses_log.jsonl'
+    # training configs
+    epochs = 5
+    loss_func = nn.BCELoss()
+    optimizers = [optim.AdamW(probe.params, lr=0.001) for probe in probes] #create separate optimizers for different probes
+    logging = True
+    save_probes = True
+    #_________________________
+    if max_samples != -1:
+        pbar = tqdm(total=max_samples, desc='sample')
+    assert len(type_2_idx) == len(probes)
+    print(f'\nmax_samples: {max_samples}\n')
+    #TODO: prior training eval
+    with open(training_stat_path, 'w') as statfile:
+        for split_num in trange(1, split_nums, desc='split'): #split1 and 2
+            for epoch in trange(epochs, desc='epoch'):
+                print(f'\n===\nNow start split {split_num}, epoch {epoch}\n===\n')
+                running_losses = [0.0]*len(probes)
+                if dataset_name == 'math_shepherd':
+                    csv_path = f'./features/MATH-Shepherd_part_{split_num}.csv'
+                else:
+                    raise NotImplementedError
+                with open(csv_path, newline='') as csvfile:
+                    sample_count = 0
+                    csvreader = csv.DictReader(csvfile)
+                    for sample_id, row in enumerate(csvreader):
+                        if max_samples != -1 and sample_id == (max_samples+n_shot):
+                            break
+                        # print(f'\n  - sample_id: {sample_id} / max_samples: {max_samples}\n') ###############
+                        # line_count += 1
+                        if sample_id < n_shot:
+                            continue
+                        if dataset_name == 'math_shepherd':
+                            label = row['label']
+                            question, steps, labels = extract_q_s_l(label)
+                            answer = extract_a(label)
+                            sample_label = 1 #math-shepherd only has samples with correct final answers
+                        else:
+                            raise NotImplementedError
+
+                        sample_count += 1
+                        pbar.update(1)
+                        for step_id, step in enumerate(steps):
+                            is_I = (step_id == 0 and 0 in hiddens_range)
+                            is_minus = ((step_id + 1 - len(steps)) < 0 and (step_id + 1 - len(steps)) in hiddens_range)
+                            is_O = ((8847-step_id == 8848-len(steps)) and 8848 in hiddens_range)
+
+                            if is_I or is_minus or is_O:
+                                '''
+                                1. Generation
+                                '''
+                                assistant_content = build_assistant_prompt(steps, step_id)
+                                if step_id == len(steps)-1: #last step
+                                    suffix_start = len(f'Step{step_id}: ')
+                                    assistant_content = assistant_content[:-suffix_start]
+                                if use_template:
+                                    chat = [
+                                        {
+                                            'role': 'user',
+                                            'content': build_user_prompt(question, examples),
+                                        },
+                                        {
+                                            'role': 'assistant',
+                                            'content': assistant_content,
+                                        }
+                                    ]
+                                    prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>') #让assistant content的hiddens与生成的hiddens连贯
+                                else:
+                                    prompt = f'{examples}\n\nSolve the following Question step by step.\n\nQuestion: {question}\n\n{assistant_content}'
+                                tokenized_prompt = tokenizer(prompt, return_tensors='pt').to(device)
+                                gen_config = GenerationConfig(
+                                    max_new_tokens=100,
+                                    pad_token_id=tokenizer.eos_token_id,
+                                    return_dict_in_generate=True,
+                                )
+                                _, step_output_dict = collect_model.generate(
+                                    tokenized_prompt, 
+                                    generation_config = gen_config,
+                                    unit_locations=None,      # set to None means intervention will be applied for each forward call
+                                    intervene_on_prompt=True, # intervention will be called for the prompt kv cache call
+                                    subspaces=[{"logging": False}], # other metadata
+                                )
+
+                                '''
+                                2. collect different type of hiddens
+                                '''
+                                io_tokens = tokenized_prompt.input_ids[0]
+                                io_hiddens = torch.cat(collector.states, dim=1).squeeze(0)
+                                if is_I:
+                                    hiddens = collector.states[0].squeeze(0)
+                                    probe_id = type_2_idx['I']
+                                    # print(f'\nStep{step_id} is I! probe_id: {probe_id}\n')
+                                elif is_O:
+                                    hiddens = io_hiddens
+                                    probe_id = type_2_idx['I+O']
+                                    # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n')
+                                elif is_minus: #-1, -2, ...
+                                    curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
+                                    curr_start, curr_end = find_subiter_range(io_tokens, curr_step_tokens)
+                                    hiddens = io_hiddens[:curr_end, :]
+                                    key = str(step_id + 1 - len(steps))
+                                    probe_id = type_2_idx[key]
+                                    # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n')
+
+                                collector.reset()
+                                #forward and backward props:
+                                probe = probes[probe_id]
+                                optimizers[probe_id].zero_grad()
+                                pred_logits = probe(hiddens)
+                                label = torch.tensor([int(labels[step_id] == '+')], dtype=torch.float32).to(device) #tensor.Size(1)
+                                loss = loss_func(pred_logits, label)
+                                loss.backward()
+                                optimizers[probe_id].step()
+                                running_losses[probe_id] += loss.item()
+
+                        #end of step iter
+                        # if is_O: ####################test
+                        if logging and (sample_count % 100 == 99): #no early break!!
+                            # print(f'\n___up to {sample_count}th sample (Sample{sample_id})___\n')
+                            # for loss_id in range(len(running_losses)):
+                            #     print(f"probe_{loss_id}'s running loss: {running_losses[loss_id] / (sample_count):.3f}")
+                            # print(f'\n_______________________________________\n')
+                            loss_stat = {
+                                'split': split_num,
+                                'epoch': epoch,
+                                'samples': sample_count,
+                                'running_losses': [round(loss/(sample_count+1), 4) for loss in running_losses]
+                            }
+                            statfile.write(json.dumps(loss_stat)+'\n')
+                    #end of sample iter
+                #csvfile
+            #end of epoch
+        #end of split_num
+    #end of statfile
+
+    #TODO: post training eval
+
+    '''
+    save the trained probes 
+    '''
+    for k, v in type_2_idx.items():
+        probe_path = f'{stat_prefix}/probe_{k}.json'
+        stat_dict = probes[v].state_dict()
+        with open(probe_path, 'w') as f:
+            json.dump(stat_dict, f)
+        print(f'\ntrained probe saved to {probe_path}')
+
+    return probes
+
+
+
+def probing_analysis(data_name, tokenizer, collect_model, collector, probes, config, device='cuda'):
+    #______hyper params______
+    split_num = config['split_num']
+    n_shot = config['n_shot']
+    examples = config['examples']
+    stat_path = config['stat_path']
+    hiddens_range = config['hiddens_range']
+    type_2_idx = {'I': 0, '-3': 1, '-2': 2, '-1': 3, 'I+O': 4} #hard-coded for the default FactCheckMate settings
+    use_template = config['use_template'] if config['use_template'] else True
+    max_samples = config['max_samples'] if config['max_samples'] else -1
+    print(f'\nprobes length: {len(probes)}\n') ###############
+    #specify the range of hidden states that the probe takes as input 
+    if hiddens_range == None:
+        hiddens_range = [i for i in range(n_shot)]
+    acc_stat = {} #correct count
+    for hr in hiddens_range: 
+        if hr == 0:
+            acc_stat['I'] = 0
+        if hr == 8848:
+            acc_stat['I+O'] = 0
+        if hr < 0:
+            acc_stat[str(hr)] = 0
+    '''
+    expected stat file format:
+    {
+        sample_id,
+        text,
+        Acc: {
+            'I': bool,
+            'I+O': bool,
+            '-1': bool,
+            ...
+        }
+    },
+    ...
+    {
+        'I': %,
+        'I+O': %,
+        '-1': %,
+        ...
+    }
+    '''
+    #_________________________
+    if data_name == 'math_shepherd':
+        csv_path = f'./features/MATH-Shepherd_part_{split_num}.csv'
+    else:
+        raise NotImplementedError
+    with open(stat_path, 'w') as statfile:
+        with open(csv_path, newline='') as csvfile:
+            sample_count = 0
+            csvreader = csv.DictReader(csvfile)
+            for sample_id, row in enumerate(tqdm(csvreader)):
+                if max_samples != -1 and sample_id == (max_samples+n_shot):
+                    break
+                # print(f'\n  - sample_id: {sample_id} / max_samples: {max_samples}\n') ###############
+                # line_count += 1
+                if sample_id < n_shot:
+                    continue
+                if data_name == 'math_shepherd':
+                    label = row['label']
+                    question, steps, labels = extract_q_s_l(label)
+                    answer = extract_a(label)
+                    sample_label = 1 #math-shepherd only has samples with correct final answers
+                else:
+                    raise NotImplementedError
+
+                sample_stat = {
+                    'sample_id': sample_id,
+                    'Acc': {}, 
+                    'question': question,
+                    'steps': steps,
+                    'labels': labels,
+                    'answer': answer,
+                }
+                sample_count += 1
+
+                for step_id, step in enumerate(steps):
+                    # print(f'\n  - Step{step_id}: {step}\n') ###############
+                    is_I = (step_id == 0 and 0 in hiddens_range)
+                    is_minus = ((step_id + 1 - len(steps)) < 0 and (step_id + 1 - len(steps)) in hiddens_range)
+                    is_O = ((8847-step_id == 8848-len(steps)) and 8848 in hiddens_range)
+
+                    if is_I or is_minus or is_O:
+                        ###############
+                        # if is_I:
+                        #     print(f'\nStep{step_id} is I!\n')
+                        # elif is_minus:
+                        #     print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}!\n')
+                        # elif is_O:
+                        #     print(f'\nStep{step_id} is I+O!\n') 
+                        ###############
+                        assistant_content = build_assistant_prompt(steps, step_id)
+                        if step_id == len(steps)-1: #last step
+                            suffix_start = len(f'Step{step_id}: ')
+                            assistant_content = assistant_content[:-suffix_start]
+                        if use_template:
+                            # build chat
+                            # if step_id == len(steps)-1: #last step
+                            #     suffix_start = len(f'Step{step_id}: ')
+                            #     assistant_content = assistant_content[:suffix_start] + f'The answer is: {answer}\n'
+                            chat = [
+                                {
+                                    'role': 'user',
+                                    'content': build_user_prompt(question, examples),
+                                },
+                                {
+                                    'role': 'assistant',
+                                    'content': assistant_content,
+                                }
+                            ]
+                            prompt = tokenizer.apply_chat_template(chat, tokenize=False).rstrip('<|eot_id|>') #让assistant content的hiddens与生成的hiddens连贯
+                        else:
+                            prompt = f'{examples}\n\nSolve the following Question step by step.\n\nQuestion: {question}\n\n{assistant_content}'
+                        tokenized_prompt = tokenizer(prompt, return_tensors='pt').to(device)
+                        ###############
+                        # if step_id == 5:
+                        #     path = './evaluate/full_prompt_.txt'
+                        #     with open(path, 'w') as f:
+                        #         f.write(prompt)
+                        #     print(f'\n+++++++\nText has been written to {path}.\n+++++++\n')
+                        ###############
+                        gen_config = GenerationConfig(
+                            max_new_tokens=100,
+                            pad_token_id=tokenizer.eos_token_id,
+                            return_dict_in_generate=True,
+                        )
+                        _, step_output_dict = collect_model.generate(
+                            tokenized_prompt, 
+                            generation_config = gen_config,
+                            unit_locations=None,      # set to None means intervention will be applied for each forward call
+                            intervene_on_prompt=True, # intervention will be called for the prompt kv cache call
+                            subspaces=[{"logging": False}], # other metadata
+                        )
+
+                        
+                        io_tokens = tokenized_prompt.input_ids[0]
+                        io_hiddens = torch.cat(collector.states, dim=1).squeeze(0)
+                        # print(f'\n Step{step_id}: io_tokens.shape: {io_tokens.shape}\nio_hiddens.shape: {io_hiddens.shape}\n') ###############
+                        '''
+                        Analyze by cases
+                        '''
+                        #1. collect hiddens
+                        if is_I:
+                            hiddens = collector.states[0].squeeze(0)
+                            probe_id = type_2_idx['I']
+                            # print(f'\nStep{step_id} is I! probe_id: {probe_id}\n')
+                        elif is_O:
+                            hiddens = io_hiddens[:curr_end, :]
+                            probe_id = type_2_idx['I+O']
+                            # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n')
+                        elif is_minus: #-1, -2, ...
+                            curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
+                            curr_start, curr_end = find_subiter_range(io_tokens, curr_step_tokens)
+                            hiddens = io_hiddens[:curr_end, :]
+                            key = str(step_id + 1 - len(steps))
+                            probe_id = type_2_idx[key]
+                            # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n')
+                        # else:
+                        #     raise NotImplementedError
+                        collector.reset()
+                        #2. probbing and logging 正常情况每个sample，下面的每个条件只会各经过一次
+                        # print(f"\n  - probe's input hiddens.shape: {hiddens.shape}\n") ###############
+                        probe = probes[probe_id]
+                        # probe.to(device)
+                        pred = int(probe(hiddens).item() > 0.5) #boolean output
+                        if is_I:
+                            sample_stat['Acc']['I'] = int(pred == sample_label)
+                            acc_stat['I'] += int(pred == sample_label)
+                        elif is_O: # I+O
+                            sample_stat['Acc']['I+O'] = int(pred == sample_label)
+                            acc_stat['I+O'] += int(pred == sample_label)
+                        elif is_minus: #-1, -2, ...
+                            label = int(labels[step_id] == '+')     
+                            key = str(step_id + 1 - len(steps))
+                            sample_stat['Acc'][key] = int(pred == label)
+                            acc_stat[key] += int(pred == label)
+                    #end of hiddens_range
+                #end of step iter
+                # print(f"\n  - End of steps iteration, sample{sample_id}'s stat: {sample_stat}\n") ###############
+                statfile.write(json.dumps(sample_stat)+'\n')
+
+            #end of sample iter
+            print(f'\n______\nFinished probing all the samples. Total samples: {max_samples}')
+            for k, v in acc_stat.items():
+                acc_stat[k] = round((v/sample_count)*100, 2) #Acc in %
+            print(f'\nResult: {acc_stat}\n______\n')
+            statfile.write('\n'+json.dumps(acc_stat))
+        #close csvfile
+    #close statfile
+    print(f'\n\nStat written to {stat_path}')
+
+
+def load_math_shepherd(data_path, n_shot, sample_num=1000):
+    raise NotImplementedError
+
+
 def eval_math_shepherd(csv_path, tokenizer, n_shot, eval_size=200):
     '''
     Return tokenized n-shot prompt and answer for each sample question
@@ -463,8 +847,8 @@ def tokenized_math_shepherd(dataset, tokenizer, n_shot): #always read 1k origina
                     validate_prompts.append(prompt)
                     validate_labels.append(label)
             count += 1###############
-            if count == 20: ##############
-                break######################
+            # if count == 20: ##############
+            #     break######################
     return prefix_len, train_prompts, train_labels, validate_prompts, validate_labels
 import json
 import csv
@@ -960,6 +1344,7 @@ def find_subiter_range(full_iter, subiter):
             end_idx = i + subiter_len
             return start_idx-4, end_idx+1 # move back again
     return None, None # no found
+
 
 def collect_pv_hs(tokenizer, pv_model, collector, chat, curr_step, prefix, hs_type='I-Sn', device='cuda', subspace=None):
     '''

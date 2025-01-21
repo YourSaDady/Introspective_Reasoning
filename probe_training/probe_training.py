@@ -16,9 +16,52 @@ from tqdm import tqdm
 import argparse
 from datasets import Dataset, load_dataset
 
-sys.path.append('/h/382/momoka/HKU/honest_llama')
+sys.path.append('/home/yichuan/HKU/honest_llama')
 print(f'The current working directory: {os.getcwd()}')
 from probes import Classifier, InterventionModule
+
+'''
+convert a data batch into a list of samples
+'''
+def debatch(dataset):
+    sample_list = []
+    for sample_id in range(len(dataset)):
+        sample = {key: dataset[key][sample_id] for key in dataset}
+        sample_list.append(sample)
+    return sample_list
+
+'''
+classifier & intervener 通用, 从HF下载data至本地。
+'''
+# def data_transfer(hf_path, local_path_prefix, max_samples=6000, hf_batch_size=100):
+#     for split in ['train', 'validation']: 
+#         if split == 'train':
+#             local_path = local_path_prefix + 'train_set.jsonl'
+#         else:
+#             local_path = local_path_prefix + 'validate_set.jsonl'
+        
+#         data_dicts = load_dataset(hf_path, split=split, data_dir=None)
+#         print(f'\ndata_info: \n{data_dicts}\n')
+#         # return
+#         sample_count = 0
+#         with open(local_path, 'w') as f:
+#             for hf_data in data_dicts:
+#                 print(f'hf_data[]: {hf_data}')
+#                 # hf_data = load_dataset(hf_path, split=split, data_dir=data_dir) #split=split
+#                 sample_batch = debatch(hf_data)
+#                 if batch_start == 0:  
+#                     print(f'\nlen(sample_batch): {len(sample_batch)}')
+#                     sample_keys = [key for key in sample_batch[0]]
+#                     print(f"\nsample0's keys: {sample_keys}")
+#                 sample_count += len(sample_batch)
+#                 for sample in sample_batch:
+#                     f.write(json.dumps(sample) + '\n')
+                
+#                 break
+        
+#         print(f'\nTransferred dataset to {local_path}! Total {split} samples: {sample_count}\n')
+        
+
 
 # def load_HF_data_split(split_num): #TODO: load from remote HF hub, stil got errors
 #     src_path = f'Lo-Fi-gahara/intervene_{split_num}k'
@@ -199,6 +242,14 @@ def main():
     # elif args.probe_type == 'intervention_module' and not args.load_from_local:
     #     print(f'\n***\nnow start loading classifier datasets with split ({args.split_num}) for layer ({args.layer}) from HF...\n***\n')
     #     train_set, validate_set = load_HF_data_split(args.split_num)
+    
+    elif args.probe_type == 'classifier' and not args.load_from_local:
+        print(f'\n不是144!!!!\n')############################################
+        hf_path = f'Lo-Fi-gahara/classify_{args.split_num}k'
+        local_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_' # + train_set.jsonl / validate_set.jsonl
+        data_transfer(hf_path, local_path) #transfer the data split from HF to a local json file
+
+        return############################################
     elif args.probe_type == 'intervention_module' and args.load_from_local:
         print(f'\n***\nnow start loading intervener datasets with split ({args.split_num}) for layer ({args.layer}) from local...\n***\n')
         train_path = f'./features/{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}k_train_set.jsonl'
@@ -232,6 +283,7 @@ def main():
                     prior_path = f'./trained_probes/interventor_lstm_{args.split_num-1}k.pth'
             else:
                 save_path = f'./trained_probes/{type}_{aggregate}_{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}.json'
+                # prior_path = 'layer3_lstm_llama3.1_8b_instruct_16_math_shepherd_2k_best84.json' ###################test
                 prior_path = f'./trained_probes/{type}_{aggregate}__{args.model_name}_{args.layer}_{args.dataset_name}_{args.split_num}.json' #因为output size变了，所以重新训练
             print(f'\n---------------------\nnow start loading probe of type ({type}) and aggregate_method ({aggregate})...\n---------------------\n')
             if args.probe_type == 'classifier':
@@ -248,6 +300,7 @@ def main():
                 )
             # load state_dict if there's any
             if os.path.exists(prior_path):
+                print(f'\nFound trained stat_dict from {prior_path}!\n')
                 state_dict = torch.load(prior_path)
                 probe.load_state_dict(state_dict)
 
@@ -282,7 +335,7 @@ def main():
                             correct += 1
                 prior_acc = 100 * correct // total
                 print(f'Prior training, accuracy on validatation set of size ({total}): {prior_acc:.3f}%.')
-        
+            return ###################test
             # Start training:
             if args.probe_type == 'classifier':
                 epoch = 1 #确保可以出现early stop

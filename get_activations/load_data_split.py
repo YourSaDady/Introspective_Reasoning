@@ -17,23 +17,25 @@ from datasets import Dataset
 import sys
 import json
 from tqdm import tqdm
-sys.path.append('/h/382/momoka/HKU/honest_llama')
+sys.path.append('/home/yichuan/HKU/honest_llama')
 # Path to the 'train' directory
 
 def convert2JSONserializable(data_dict):
     for key in data_dict:
         h_list = data_dict[key]
         data_dict[key] = str(h_list)
-
+#_______hyper params________
 layer = 16
-split_num = 9
+split_num = 1
 divs = {'train': 791, 'validation': 201} #size
+#___________________________
+
 
 # for split_num in range(6, 10):
 # def load_HF_data_slit()
 for div in divs:
-    if div == 'validation': ################
-        continue ################
+    # if div == 'validation': ################
+    #     continue ################
     print(f'Now on {div}...')
     src_dir = f'./features/intervene_{split_num}k/{div}'
     save_dir = f'./features/llama3.1-8b-instruct_{layer}_math-shepherd_{split_num}k_{div}_set.jsonl'
