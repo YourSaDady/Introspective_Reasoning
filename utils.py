@@ -158,6 +158,9 @@ def extract_q_s_l(text): #currently for MATH-Shpeherd labeled dataset only
         else:
             labels = labels[:len(steps)]
 
+    # revise the last answer step to be '+'...
+    labels[-1] = '+'
+
     return question, steps, labels
 
 def build_examples(examples, dataset_name='dpo'):
@@ -386,7 +389,7 @@ import torch.optim as optim
 from tqdm import trange
 def online_training(dataset_name, tokenizer, collect_model, collector, probes, config, device='cuda'):
     #______hyper params______
-    split_nums = 3 #split1 and 2
+    split_nums = [1, 2]
     n_shot = config['n_shot']
     examples = config['examples']
     hiddens_range = config['hiddens_range']
@@ -394,7 +397,7 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
     use_template = config['use_template'] if config['use_template'] else True
     max_samples = config['max_samples'] if config['max_samples'] else -1 ###############
     stat_prefix = config['stat_prefix']
-    training_stat_path = f'{stat_prefix}/running_losses_log.jsonl'
+    training_stat_path = f'{stat_prefix}/running_losses_log_posans.jsonl'
     # training configs
     epochs = 5
     loss_func = nn.BCELoss()
@@ -402,15 +405,16 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
     logging = True
     save_probes = True
     #_________________________
-    if max_samples != -1:
-        pbar = tqdm(total=max_samples, desc='sample')
-    assert len(type_2_idx) == len(probes)
-    print(f'\nmax_samples: {max_samples}\n')
     #TODO: prior training eval
     with open(training_stat_path, 'w') as statfile:
-        for split_num in trange(1, split_nums, desc='split'): #split1 and 2
-            for epoch in trange(epochs, desc='epoch'):
+        for split_num in split_nums: #split1 and 2
+            for epoch in range(epochs):
                 print(f'\n===\nNow start split {split_num}, epoch {epoch}\n===\n')
+                if max_samples != -1:
+                    pbar = tqdm(total=max_samples, desc='sample')
+                assert len(type_2_idx) == len(probes)
+                print(f'\nmax_samples: {max_samples}\n')
+                
                 running_losses = [0.0]*len(probes)
                 if dataset_name == 'math_shepherd':
                     csv_path = f'./features/MATH-Shepherd_part_{split_num}.csv'
@@ -418,6 +422,7 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                     raise NotImplementedError
                 with open(csv_path, newline='') as csvfile:
                     sample_count = 0
+                    counts = {'I': 0, '-3': 0, '-2': 0, '-1': 0, 'I+O': 0}
                     csvreader = csv.DictReader(csvfile)
                     for sample_id, row in enumerate(csvreader):
                         if max_samples != -1 and sample_id == (max_samples+n_shot):
@@ -485,10 +490,12 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                                 if is_I:
                                     hiddens = collector.states[0].squeeze(0)
                                     probe_id = type_2_idx['I']
+                                    counts['I'] += 1
                                     # print(f'\nStep{step_id} is I! probe_id: {probe_id}\n')
                                 elif is_O:
                                     hiddens = io_hiddens
                                     probe_id = type_2_idx['I+O']
+                                    counts['I+O'] += 1
                                     # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n')
                                 elif is_minus: #-1, -2, ...
                                     curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
@@ -496,6 +503,7 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                                     hiddens = io_hiddens[:curr_end, :]
                                     key = str(step_id + 1 - len(steps))
                                     probe_id = type_2_idx[key]
+                                    counts[key] += 1
                                     # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n')
 
                                 collector.reset()
@@ -516,11 +524,19 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                             # for loss_id in range(len(running_losses)):
                             #     print(f"probe_{loss_id}'s running loss: {running_losses[loss_id] / (sample_count):.3f}")
                             # print(f'\n_______________________________________\n')
+                            keys = [key for key in counts]
+                            losses = []
+                            for k, key in enumerate(keys):
+                                losses.append(round(running_losses[k]/(counts[key]+1), 4))
+                            print(f'\n___up to {sample_count}th sample (Sample{sample_id})___')
+                            print(f'running_losses: {losses}')
+                            print(f'_______________________________________\n')
+
                             loss_stat = {
                                 'split': split_num,
                                 'epoch': epoch,
                                 'samples': sample_count,
-                                'running_losses': [round(loss/(sample_count+1), 4) for loss in running_losses]
+                                'running_losses': losses, #[round(loss/(sample_count+1), 4) for loss in running_losses]
                             }
                             statfile.write(json.dumps(loss_stat)+'\n')
                     #end of sample iter
@@ -535,7 +551,7 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
     save the trained probes 
     '''
     for k, v in type_2_idx.items():
-        probe_path = f'{stat_prefix}/probe_{k}.json'
+        probe_path = f'{stat_prefix}/probe_{k}_pos_ans.json'
         stat_dict = probes[v].state_dict()
         with open(probe_path, 'w') as f:
             json.dump(stat_dict, f)
@@ -595,6 +611,11 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
     with open(stat_path, 'w') as statfile:
         with open(csv_path, newline='') as csvfile:
             sample_count = 0
+            count_I = 0
+            count_IO = 0
+            count_1 = 0
+            count_2 = 0
+            count_3 = 0
             csvreader = csv.DictReader(csvfile)
             for sample_id, row in enumerate(tqdm(csvreader)):
                 if max_samples != -1 and sample_id == (max_samples+n_shot):
@@ -690,10 +711,12 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                         if is_I:
                             hiddens = collector.states[0].squeeze(0)
                             probe_id = type_2_idx['I']
+                            count_I += 1
                             # print(f'\nStep{step_id} is I! probe_id: {probe_id}\n')
                         elif is_O:
                             hiddens = io_hiddens[:curr_end, :]
                             probe_id = type_2_idx['I+O']
+                            count_IO += 1
                             # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n')
                         elif is_minus: #-1, -2, ...
                             curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
@@ -701,6 +724,12 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                             hiddens = io_hiddens[:curr_end, :]
                             key = str(step_id + 1 - len(steps))
                             probe_id = type_2_idx[key]
+                            if key == '-1':
+                                count_1 += 1
+                            elif key == '-2':
+                                count_2 += 1
+                            else:
+                                count_3 += 1
                             # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n')
                         # else:
                         #     raise NotImplementedError
@@ -709,7 +738,7 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                         # print(f"\n  - probe's input hiddens.shape: {hiddens.shape}\n") ###############
                         probe = probes[probe_id]
                         # probe.to(device)
-                        pred = int(probe(hiddens).item() > 0.5) #boolean output
+                        pred = 1 if probe(hiddens).item() >= 0.5 else 0 #boolean output
                         if is_I:
                             sample_stat['Acc']['I'] = int(pred == sample_label)
                             acc_stat['I'] += int(pred == sample_label)
@@ -727,9 +756,20 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                 statfile.write(json.dumps(sample_stat)+'\n')
 
             #end of sample iter
-            print(f'\n______\nFinished probing all the samples. Total samples: {max_samples}')
+            print(f'\n______\nFinished probing all the samples. Total samples: {max_samples}, sample_count: {sample_count}')
+            print(f'\ncount_I: {count_I}, count_3: {count_3}, count_2: {count_2}, count_1: {count_1}, count_IO: {count_IO}\n')
             for k, v in acc_stat.items():
-                acc_stat[k] = round((v/sample_count)*100, 2) #Acc in %
+                # acc_stat[k] = round((v/max_samples)*100, 2) #Acc in % #sample_count
+                if k =='I':
+                    acc_stat[k] = round((v/count_I)*100, 2)
+                elif k =='I+O':
+                    acc_stat[k] = round((v/count_IO)*100, 2)
+                elif k =='-1':
+                    acc_stat[k] = round((v/count_1)*100, 2)
+                elif k =='-2':
+                    acc_stat[k] = round((v/count_2)*100, 2)
+                elif k =='-3':
+                    acc_stat[k] = round((v/count_3)*100, 2)
             print(f'\nResult: {acc_stat}\n______\n')
             statfile.write('\n'+json.dumps(acc_stat))
         #close csvfile

@@ -64,14 +64,15 @@ HF_NAMES = {
 def main(): 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default='llama3.1_8b_instruct')
-    parser.add_argument('--probe_path', type=str, default='./trained_probes/layer3_lstm_llama3.1_8b_instruct_16_math_shepherd_2k_best84.json')
+    parser.add_argument('--probe_path', type=str, default='./trained_probes/layer3_lstm_llama3.1_8b_instruct_16_math_shepherd_2k_best84.json') #./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--layer', type=int, default=16)
     parser.add_argument('--split_num', type=int, default=3) #default: use the split3 for analysis, and split1 and 2 for prpbes training
-    parser.add_argument('--sample_num', type=int, default=50)
+    parser.add_argument('--sample_num', type=int, default=1000)
     parser.add_argument('--n_shot', type=int, default=8)
     parser.add_argument('--online', type=bool, default=True)
     parser.add_argument('--mode', type=str, default='freezed', help='choose from {"freezed", "specified"}. "freezed" use a probe trained on I+O for all hiddens types; "specified" trains diffierent probes for different hidden types')
+    parser.add_argument('--online_training', type=bool, default=False)
     # parser.add_argument('--specified_type', type=str, default='I+O')
     parser.add_argument('--build_from_scratch', type=bool, default=False)
     args = parser.parse_args()
@@ -79,6 +80,13 @@ def main():
     #___hyper params___
     sample_num = args.sample_num
     hiddens_range = [0, -1, -2, -3, 8848] #hiddens types
+    trained_probes_paths = [
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json'
+    ]
     #__________________
 
     #0. load dataset
@@ -91,7 +99,7 @@ def main():
     result, others = formatter(args.dataset_name, args.split_num, args.n_shot)  
 
 
-    #1. load model and probe
+    #1. load model and probe(s)
     print('\nLoading model and probe...\n')
     model_name_or_path = HF_NAMES[args.model_name]['hf_path']
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -110,6 +118,7 @@ def main():
         probe.to('cuda')
         probes.append(probe)
     print(f'\nInitialized {len(probes)} probes\n')
+
     #2. build pv model
     print(f'\nBuilding the pyvene collection model...\n')
     nshot = others['nshot']
@@ -157,7 +166,7 @@ def main():
 
         Here we use the settings from FackCheckMate Table 2 by default
         '''
-        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_probing_stat.jsonl'
+        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_probing_stat_{args.mode}_posans.jsonl' ########
         start_t = time.time()
         probbing_config = {
             'split_num': args.split_num,
@@ -169,13 +178,21 @@ def main():
             'max_samples': sample_num,
         }
         #1. train probes online or load trained stat_dicts
-        if args.mode == 'specified':
+        if args.mode == 'specified' and args.online_training:
             training_config = probbing_config
             training_config['stat_prefix'] = f'./trained_probes/{args.dataset_name}/{args.model_name}_layer{args.layer}'
             os.makedirs(training_config['stat_prefix'], exist_ok=True)
 
             trained_probes = online_training(args.dataset_name, tokenizer, collect_model, collector, probes, training_config)
             probes.clear() ################??????
+        elif args.mode == 'specified' and not args.online_training:
+            for idx, probe_path in enumerate(trained_probes_paths):
+                if os.path.exists(probe_path):
+                    probes[idx].load_state_dict(probe_path)
+                    print(f'loaded trained {idx}th probe from {probe_path}')
+                else:
+                    print(f'\nThe specified probe path: {probe_path} does not exist, initialized a probe.\n')
+            trained_probes = probes
         else: #freezed
             probe_path = args.probe_path
             if os.path.exists(probe_path):

@@ -18,7 +18,19 @@ import sys
 import json
 from tqdm import tqdm
 sys.path.append('/home/yichuan/HKU/honest_llama')
+os.chdir('/home/yichuan/HKU/honest_llama')
+print(f'The current working directory: {os.getcwd()}')
 # Path to the 'train' directory
+
+'''
+convert a data batch into a list of samples
+'''
+def debatch(dataset):
+    sample_list = []
+    for sample_id in range(len(dataset)):
+        sample = {key: dataset[key][sample_id] for key in dataset}
+        sample_list.append(sample)
+    return sample_list
 
 def convert2JSONserializable(data_dict):
     for key in data_dict:
@@ -37,32 +49,40 @@ for div in divs:
     # if div == 'validation': ################
     #     continue ################
     print(f'Now on {div}...')
-    src_dir = f'./features/intervene_{split_num}k/{div}'
+    src_dir = f'./features/classify_{split_num}k/'
     save_dir = f'./features/llama3.1-8b-instruct_{layer}_math-shepherd_{split_num}k_{div}_set.jsonl'
     # Initialize empty lists to store the data
     all_data = []
-
+    count = 0
     # Iterate through each subdirectory
-    print("Iterate through each subdirectory")
+    print(f"Now converting {div}...")
     with open(save_dir, 'w') as f:
-        for i in tqdm(range(divs[div])):
-            subdir = os.path.join(src_dir, f'sample{i}')
-            parquet_file = os.path.join(subdir, f'{div}-00000-of-00001.parquet')
+        for i in tqdm(range(0, 5400, 100)):
+            subdir = os.path.join(src_dir, f'sample{i}-{i+99}')
+            parquet_file_names = [f'{div}-00000-of-00001.parquet', f'{div}-00000-of-00002.parquet', f'{div}-00001-of-00002.parquet']
+            for p_name in parquet_file_names:
+                parquet_file = os.path.join(subdir, p_name)
+                if os.path.exists(parquet_file):
+                    print(f'\n file "{parquet_file}" exists!\n')
+                    # Read the Parquet file
+                    dataset = pq.read_table(parquet_file).to_pandas()
 
-            if os.path.exists(parquet_file):
-                # Read the Parquet file
-                dataset = pq.read_table(parquet_file).to_pandas()
-
-                # Convert to Hugging Face Dataset
-                data = Dataset.from_pandas(dataset)
-                # print(f"h_prior: {data['h_prior']}")
-                # print(f'h_posterior: {data["h_posterior"]}')
-                data_dict = data.to_dict()
-                # convert2JSONserializable(data_dict)
-
-                # # Append the dataset to the list
-                # all_data.append(data_dict)
-                f.write(json.dumps(data_dict) + '\n')
+                    # Convert to Hugging Face Dataset
+                    data = Dataset.from_pandas(dataset)
+                    # print(f"h_prior: {data['h_prior']}")
+                    # print(f'h_posterior: {data["h_posterior"]}')
+                    data_dict = data.to_dict()
+                    # convert2JSONserializable(data_dict)
+                    data_list = debatch(data_dict)
+                    # # Append the dataset to the list
+                    # all_data.append(data_dict)
+                    count += len(data_list)
+                    for data in data_list:
+                        f.write(json.dumps(data) + '\n')
+            #end of parquet files
+            break ##############test
+        #end of dirs
+    print(f'\nCompleted converting {count} {div} samples. Saved to {save_dir}')
         # break
 
     # # Concatenate the datasets from all subdirectories
@@ -72,4 +92,4 @@ for div in divs:
     # with open(save_dir, 'w') as f:
     #     for data_dict in all_data:
     #         f.write(json.dumps(data_dict) + '\n')
-    print(f'dataset saved to {save_dir}')
+    # print(f'dataset saved to {save_dir}')
