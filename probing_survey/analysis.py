@@ -64,7 +64,7 @@ HF_NAMES = {
 def main(): 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default='llama3.1_8b_instruct')
-    parser.add_argument('--probe_path', type=str, default='./trained_probes/layer3_lstm_llama3.1_8b_instruct_16_math_shepherd_2k_best84.json') #./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json
+    parser.add_argument('--probe_path', type=str, default='./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_pos_ans.json') #./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--layer', type=int, default=16)
     parser.add_argument('--split_num', type=int, default=3) #default: use the split3 for analysis, and split1 and 2 for prpbes training
@@ -81,11 +81,11 @@ def main():
     sample_num = args.sample_num
     hiddens_range = [0, -1, -2, -3, 8848] #hiddens types
     trained_probes_paths = [
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json'
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I_pos_ans.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_pos_ans.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_pos_ans.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_pos_ans.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_pos_ans.json'
     ]
     #__________________
 
@@ -131,7 +131,7 @@ def main():
         prefix_len = tokenizer.apply_chat_template(prefix, tokenize=True, return_tensors='pt').size(-1)
     else:
         prefix_len = tokenizer(nshot, return_tensors='pt').input_ids[0].size(0)
-        print(f'\nprefix_len: {prefix_len}\n') ###########
+    print(f'\nprefix_len: {prefix_len}\n') ###########
     collector = Collector(multiplier=0, head=-1, prefix_len=prefix_len)
     pv_config = pv.IntervenableConfig(
         representations=[{
@@ -166,12 +166,13 @@ def main():
 
         Here we use the settings from FackCheckMate Table 2 by default
         '''
-        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_probing_stat_{args.mode}_posans.jsonl' ########
+        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_probing_stat_{args.mode}_test.jsonl' ########
         start_t = time.time()
         probbing_config = {
             'split_num': args.split_num,
             'n_shot': args.n_shot,
             'examples': nshot,
+            'prefix_len': prefix_len,
             'stat_path': stat_path,
             'hiddens_range': hiddens_range,
             'use_template': use_template,
@@ -184,7 +185,7 @@ def main():
             os.makedirs(training_config['stat_prefix'], exist_ok=True)
 
             trained_probes = online_training(args.dataset_name, tokenizer, collect_model, collector, probes, training_config)
-            probes.clear() ################??????
+
         elif args.mode == 'specified' and not args.online_training:
             for idx, probe_path in enumerate(trained_probes_paths):
                 if os.path.exists(probe_path):
@@ -199,6 +200,7 @@ def main():
                 for idx in range(len(probes)):
                     probes[idx].load_state_dict(probe_path)
                 trained_probes = probes
+                print(f'loaded trained {idx}th probe from {probe_path}')
             else:
                 print(f'\nThe specified probe path: {probe_path} does not exist, initialized a probe.\n')
         #2. probbing analysis

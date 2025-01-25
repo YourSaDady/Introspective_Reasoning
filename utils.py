@@ -54,6 +54,21 @@ ENGINE_MAP = {
 # from truthfulqa.models import find_subsequence, set_columns, MC_calcs
 # from truthfulqa.evaluate import format_frame, data_to_dict
 
+'''在一个iterable里找一个sub-iterable的区间'''
+def find_subiter_range(full_iter_, subiter_):
+    #remove some likely mismatched tokens from the two sides
+    full_iter = full_iter_[4:-1] #"Step{i}: " takes 4 tokens
+    subiter = subiter_[4:-2] 
+    # print(f'\nsubiter: {subiter}\nfull_iter: {full_iter[-50:]}...')
+    subiter_len = len(subiter)
+    for i in range(len(full_iter) - subiter_len + 1, 0, -1): #inverse order
+        if full_iter[i:i+subiter_len] == subiter: #exact match
+            start_idx = i
+            end_idx = i + subiter_len
+            return start_idx, end_idx+6 # move back again
+    # return None, None # no found
+    return len(full_iter) - subiter_len + 1, len(full_iter) + 1
+
 
 def load_nq():
     dataset = load_dataset("OamPatel/iti_nq_open_val")["validation"]
@@ -180,11 +195,17 @@ def build_user_prompt(q, e): #return I+E+Q
     instruction = 'Solve the following Question step by step.'
     return f'{e}\n\n{instruction}\n\nQuestion: {q}\n\n'
 
-def build_assistant_prompt(steps, curr_id):
-    history = ''
-    for i, step in enumerate(steps[:curr_id]):
-        history += f'Step{i}: {step}\n'
-    return f'\nAnswer: \n{history}Step{curr_id}: '
+def build_assistant_prompt(steps, curr_id, for_inference=False):
+    if for_inference:
+        history = ''
+        for i, step in enumerate(steps[:curr_id]): #不包含当前step
+            history += f'Step{i}: {step}\n'
+        return f'\nAnswer: \n{history}Step{curr_id}: ' #有后缀引导
+    else:
+        history = ''
+        for i, step in enumerate(steps[:curr_id+1]): #包含当前step
+            history += f'Step{i}: {step}\n'
+        return f'\nAnswer: \n{history}' #无后缀引导 
 
 def build_prompt(problem, steps, curr_idx, examples):
     history = ''
@@ -493,18 +514,31 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                                     counts['I'] += 1
                                     # print(f'\nStep{step_id} is I! probe_id: {probe_id}\n')
                                 elif is_O:
-                                    hiddens = io_hiddens
+                                    curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
+                                    curr_start, curr_end = find_subiter_range(io_tokens.tolist(), curr_step_tokens)
+
+                                    hiddens = io_hiddens[:curr_end, :]
                                     probe_id = type_2_idx['I+O']
                                     counts['I+O'] += 1
-                                    # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n')
+                                    # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n hiddens.shape: {hiddens.shape}\n')
+                                    # decoded_step = tokenizer.decode(io_tokens[curr_start:curr_end])
+                                    # print(f'curr_start: {curr_start}, curr_end: {curr_end}')
+                                    # print(f'curr_step: "{step}", decoded step: "{decoded_step}"') ###############
                                 elif is_minus: #-1, -2, ...
-                                    curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
-                                    curr_start, curr_end = find_subiter_range(io_tokens, curr_step_tokens)
+                                    curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] 
+                                    curr_start, curr_end = find_subiter_range(io_tokens.tolist(), curr_step_tokens)
+
                                     hiddens = io_hiddens[:curr_end, :]
                                     key = str(step_id + 1 - len(steps))
                                     probe_id = type_2_idx[key]
                                     counts[key] += 1
-                                    # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n')
+                                    # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n hiddens.shape: {hiddens.shape}\n')
+                                    # decoded_step = tokenizer.decode(io_tokens[curr_start:curr_end])
+                                    # # decoded_step_tokens_list = [tokenizer.decode(token) for token in curr_step_tokens]
+                                    # # decoded_io_tokens_list = [tokenizer.decode(token) for token in io_tokens][-50:]
+                                    # print(f'curr_start: {curr_start}, curr_end: {curr_end}')
+                                    # # print(f'decoded_step_tokens_list: \n{decoded_step_tokens_list}\ndecoded_io_tokens_list: \n{decoded_io_tokens_list}\n')
+                                    # print(f'curr_step: "{step}", decoded step: "{decoded_step}"') ###############
 
                                 collector.reset()
                                 #forward and backward props:
@@ -559,13 +593,12 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
 
     return probes
 
-
-
 def probing_analysis(data_name, tokenizer, collect_model, collector, probes, config, device='cuda'):
     #______hyper params______
     split_num = config['split_num']
     n_shot = config['n_shot']
     examples = config['examples']
+    prefix_len = config['prefix_len']
     stat_path = config['stat_path']
     hiddens_range = config['hiddens_range']
     type_2_idx = {'I': 0, '-3': 1, '-2': 2, '-1': 3, 'I+O': 4} #hard-coded for the default FactCheckMate settings
@@ -627,6 +660,7 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                 if data_name == 'math_shepherd':
                     label = row['label']
                     question, steps, labels = extract_q_s_l(label)
+                    steps = [step for step in steps if step.strip()]
                     answer = extract_a(label)
                     sample_label = 1 #math-shepherd only has samples with correct final answers
                 else:
@@ -641,8 +675,8 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                     'answer': answer,
                 }
                 sample_count += 1
-
-                for step_id, step in enumerate(steps):
+                # print(f'\nTotal steps: {len(steps)}\n') ###############
+                for step_id, step in enumerate(steps): 
                     # print(f'\n  - Step{step_id}: {step}\n') ###############
                     is_I = (step_id == 0 and 0 in hiddens_range)
                     is_minus = ((step_id + 1 - len(steps)) < 0 and (step_id + 1 - len(steps)) in hiddens_range)
@@ -658,9 +692,7 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                         #     print(f'\nStep{step_id} is I+O!\n') 
                         ###############
                         assistant_content = build_assistant_prompt(steps, step_id)
-                        if step_id == len(steps)-1: #last step
-                            suffix_start = len(f'Step{step_id}: ')
-                            assistant_content = assistant_content[:-suffix_start]
+                        
                         if use_template:
                             # build chat
                             # if step_id == len(steps)-1: #last step
@@ -701,26 +733,33 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                         )
 
                         
-                        io_tokens = tokenized_prompt.input_ids[0]
-                        io_hiddens = torch.cat(collector.states, dim=1).squeeze(0)
-                        # print(f'\n Step{step_id}: io_tokens.shape: {io_tokens.shape}\nio_hiddens.shape: {io_hiddens.shape}\n') ###############
+                        io_tokens = tokenized_prompt.input_ids[0][prefix_len:] #Input part only
+                        io_hiddens = torch.cat(collector.states, dim=1).squeeze(0) #full I+O len
                         '''
                         Analyze by cases
                         '''
                         #1. collect hiddens
                         if is_I:
+                            # print(f'\nio_tokens.shape: {io_tokens.shape}\nio_hiddens.shape: {io_hiddens.shape}\n') ###############
                             hiddens = collector.states[0].squeeze(0)
                             probe_id = type_2_idx['I']
                             count_I += 1
-                            # print(f'\nStep{step_id} is I! probe_id: {probe_id}\n')
+                            # print(f'\nStep{step_id} is I! probe_id: {probe_id}\n hiddens.shape: {hiddens.shape}\n')
                         elif is_O:
+                            curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
+                            curr_start, curr_end = find_subiter_range(io_tokens.tolist(), curr_step_tokens)
+
                             hiddens = io_hiddens[:curr_end, :]
                             probe_id = type_2_idx['I+O']
                             count_IO += 1
-                            # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n')
+                            # print(f'\nStep{step_id} is I+O! probe_id: {probe_id}\n hiddens.shape: {hiddens.shape}\n')
+                            # decoded_step = tokenizer.decode(io_tokens[curr_start:curr_end])
+                            # print(f'curr_start: {curr_start}, curr_end: {curr_end}')
+                            # print(f'curr_step: "{step}", decoded step: "{decoded_step}"') ###############
                         elif is_minus: #-1, -2, ...
-                            curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] #discard the first token '<|begin_of_text|>' (128000)
-                            curr_start, curr_end = find_subiter_range(io_tokens, curr_step_tokens)
+                            curr_step_tokens = tokenizer(step, return_tensors='pt').input_ids.tolist()[0][1:] 
+                            curr_start, curr_end = find_subiter_range(io_tokens.tolist(), curr_step_tokens)
+
                             hiddens = io_hiddens[:curr_end, :]
                             key = str(step_id + 1 - len(steps))
                             probe_id = type_2_idx[key]
@@ -730,9 +769,16 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                                 count_2 += 1
                             else:
                                 count_3 += 1
-                            # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n')
+                            # print(f'\nStep{step_id} is {(step_id + 1 - len(steps))}! probe_id: {probe_id}\n hiddens.shape: {hiddens.shape}\n')
+                            # decoded_step = tokenizer.decode(io_tokens[curr_start:curr_end])
+                            # # decoded_step_tokens_list = [tokenizer.decode(token) for token in curr_step_tokens]
+                            # # decoded_io_tokens_list = [tokenizer.decode(token) for token in io_tokens][-50:]
+                            # print(f'curr_start: {curr_start}, curr_end: {curr_end}')
+                            # # print(f'decoded_step_tokens_list: \n{decoded_step_tokens_list}\ndecoded_io_tokens_list: \n{decoded_io_tokens_list}\n')
+                            # print(f'curr_step: "{step}", decoded step: "{decoded_step}"') ###############
                         # else:
                         #     raise NotImplementedError
+
                         collector.reset()
                         #2. probbing and logging 正常情况每个sample，下面的每个条件只会各经过一次
                         # print(f"\n  - probe's input hiddens.shape: {hiddens.shape}\n") ###############
@@ -754,6 +800,8 @@ def probing_analysis(data_name, tokenizer, collect_model, collector, probes, con
                 #end of step iter
                 # print(f"\n  - End of steps iteration, sample{sample_id}'s stat: {sample_stat}\n") ###############
                 statfile.write(json.dumps(sample_stat)+'\n')
+
+                # break#################
 
             #end of sample iter
             print(f'\n______\nFinished probing all the samples. Total samples: {max_samples}, sample_count: {sample_count}')
@@ -1373,17 +1421,6 @@ def find_curr_step(token_list, curr_idx, search_start=0, log=False): #full seque
             step_end += i+1
             break
     return step_start, step_end 
-
-'''在一个iterable里找一个sub-iterable的区间'''
-def find_subiter_range(full_iter, subiter):
-    subiter = subiter[4:-1] #the first and last token can mismatch due to prefix ' '
-    subiter_len = len(subiter)
-    for i in range(len(full_iter) - subiter_len + 1):
-        if full_iter[i:i+subiter_len] == subiter:
-            start_idx = i
-            end_idx = i + subiter_len
-            return start_idx-4, end_idx+1 # move back again
-    return None, None # no found
 
 
 def collect_pv_hs(tokenizer, pv_model, collector, chat, curr_step, prefix, hs_type='I-Sn', device='cuda', subspace=None):
