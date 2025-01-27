@@ -19,4 +19,7 @@
   - Datasets for training the intervention module / PEFT is on the HuggingFace: `Lo-Fi-gahara/intervene_{n}k`
   - Train the intervention module: `python ./probes_training/probe_training.py --split_num {n} --probe_type intervention_module`
 ### 5. Analysis
-  - :wrench:
+  - FactCheckMate-style analysis:
+       - probes online training (and analysis): `python ./probing_survey/analysis.py --mode specified --online_training True`
+       - analysis in freezed mode (use probe trained on a single type of hiddens, say I+O, to analyze different types of hiddens): `python ./probing_survey/analysis.py --mode freezed --probe_path {...}`
+       - analysis in specified mode (use probes trained from different hiddens types to analyze the corresponding hiddens types): `python ./probing_survey/analysis.py --mode specified` (specify the probes' paths in the code)
