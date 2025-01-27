@@ -64,7 +64,7 @@ HF_NAMES = {
 def main(): 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default='llama3.1_8b_instruct')
-    parser.add_argument('--probe_path', type=str, default='./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_pos_ans.json') #./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json
+    parser.add_argument('--probe_path', type=str, default='./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_pos_ans.json') #./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--layer', type=int, default=16)
     parser.add_argument('--split_num', type=int, default=3) #default: use the split3 for analysis, and split1 and 2 for prpbes training
@@ -166,7 +166,7 @@ def main():
 
         Here we use the settings from FackCheckMate Table 2 by default
         '''
-        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_probing_stat_{args.mode}_test.jsonl' ########
+        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_probing_stat_{args.mode}_test{args.sample_num}.jsonl' ########
         start_t = time.time()
         probbing_config = {
             'split_num': args.split_num,
