@@ -79,9 +79,8 @@ def main():
 
     #___hyper params___
     sample_num = args.sample_num
-    hiddens_range = [0, -1, -2, -3, 8848] #hiddens types
+    hiddens_range = [-1, -2, -3, 8848] #hiddens types
     trained_probes_paths = [
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I_pos_ans.json',
         './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_pos_ans.json',
         './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_pos_ans.json',
         './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_pos_ans.json',
@@ -166,7 +165,7 @@ def main():
 
         Here we use the settings from FackCheckMate Table 2 by default
         '''
-        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_probing_stat_{args.mode}_test{args.sample_num}.jsonl' ########
+        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_{args.sample_num}_probing_stat_{args.mode}.jsonl' ########
         start_t = time.time()
         probbing_config = {
             'split_num': args.split_num,
