@@ -81,10 +81,10 @@ def main():
     sample_num = args.sample_num
     hiddens_range = [-1, -2, -3, 8848] #hiddens types
     trained_probes_paths = [
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_pos_ans.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_pos_ans.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_pos_ans.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_pos_ans.json'
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_5k.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_5k.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_5k.json',
+        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json'
     ]
     #__________________
 

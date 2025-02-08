@@ -408,9 +408,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import trange
-def online_training(dataset_name, tokenizer, collect_model, collector, probes, config, device='cuda'):
+def online_training(dataset_name, tokenizer, collect_model, collector, probes, config, device='cuda', continue_=True): #False
     #______hyper params______
-    split_nums = [1, 2]
+    split_nums = [6, 7, 8]
     n_shot = config['n_shot']
     examples = config['examples']
     prefix_len = config['prefix_len']
@@ -419,14 +419,32 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
     use_template = config['use_template'] if config['use_template'] else True
     max_samples = config['max_samples'] if config['max_samples'] else -1 ###############
     stat_prefix = config['stat_prefix']
-    training_stat_path = f'{stat_prefix}/running_losses_log_posans_new.jsonl'
+    training_stat_path = f'{stat_prefix}/running_losses_log_posans_8k.jsonl'
     # training configs
     epochs = 5
     loss_func = nn.BCELoss()
-    optimizers = [optim.AdamW(probe.params, lr=0.001) for probe in probes] #create separate optimizers for different probes
     logging = True
     save_probes = True
+    optimizers = []
     #_________________________
+
+    if continue_:
+        trained_probes_paths = [
+            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_5k.json',
+            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_5k.json',
+            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_5k.json',
+            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json'
+        ]
+        for idx, probe_path in enumerate(trained_probes_paths):
+            if os.path.exists(probe_path):
+                probes[idx].load_state_dict(probe_path)
+                print(f'loaded trained {idx}th probe from {probe_path}')
+                optimizers.append(optim.AdamW(probes[idx].params, lr=0.001))#create separate optimizers for different probes
+            else:
+                print(f'\nThe specified probe path: {probe_path} does not exist, initialized a probe.\n')
+                optimizers.append(optim.AdamW(probes[idx].params, lr=0.001))
+
+    early_break = False
     with open(training_stat_path, 'w') as statfile:
         for split_num in split_nums: #split1 and 2
             for epoch in range(epochs):
@@ -551,6 +569,14 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                             print(f'running_losses: {losses}')
                             print(f'_______________________________________\n')
 
+                            avg_loss = 0
+                            for loss in losses:
+                                avg_loss += loss
+                            avg_loss /= 4
+                            if avg_loss < 0.1:
+                                early_break = True
+                                break
+
                             loss_stat = {
                                 'split': split_num,
                                 'epoch': epoch,
@@ -560,7 +586,12 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                             statfile.write(json.dumps(loss_stat)+'\n')
                     #end of sample iter
                 #csvfile
+                if early_break:
+                    break
             #end of epoch
+            if early_break:
+                print(f'\nEarly break: avg loss = {avg_loss}\n')
+                break
         #end of split_num
     #end of statfile
 
@@ -570,7 +601,7 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
     save the trained probes 
     '''
     for k, v in type_2_idx.items():
-        probe_path = f'{stat_prefix}/probe_{k}_pos_ans.json'
+        probe_path = f'{stat_prefix}/probe_{k}_8k.json'
         stat_dict = probes[v].state_dict()
         with open(probe_path, 'w') as f:
             json.dump(stat_dict, f)

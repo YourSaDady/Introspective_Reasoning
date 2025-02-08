@@ -19,6 +19,8 @@ from datasets import Dataset, load_dataset
 sys.path.append('/home/yichuan/HKU/honest_llama')
 print(f'The current working directory: {os.getcwd()}')
 from probes import Classifier, InterventionModule
+from utils import load_math_shepherd
+from templates import apply_template
 
 '''
 convert a data batch into a list of samples
@@ -187,21 +189,13 @@ def build_data_loaders(train_path, validate_path, device, classify=False):
     return train_loader, validate_loader, len(train_set), len(validate_set)
 
 
-
-def h_m_s(start_t):
-    spent = time.time() - start_t
-    hrs = int(spent // 3600)
-    spent %= 3600
-    mins = int(spent // 60)
-    secs = int(spent % 60)
-    return f'{hrs}:{mins}:{secs}'
-
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name', type=str, default='llama3.1-8b-instruct')
-    parser.add_argument('--dataset_name', type=str, default='math-shepherd')
+    parser.add_argument('--model_name', type=str, default='llama3.1_8b_instruct')
+    parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--split_num', type=int, default=10, help='the number of dataset splits used. a single split contains 1k samples of the original dataset')
     parser.add_argument('--load_from_local', type=bool, default=False, help='source of the loaded data. Default to be False')
+    parser.add_argument('--online', type=bool, degfault=False, help='load base model to generate hiddens online')
     parser.add_argument('--probe_type', type=str, default='classifier', help='Available probe types: [\'classifier\', \'intervention_module\']')
     parser.add_argument('--layer', type=int, default=16, help='the layer of the model to access the stat vars') #llama3.1-8b-instruct has 32 transformer layers, where the middle layers are supposed to be related to reasoning
     parser.add_argument('--positive_samples_only', type=bool, default=True, help='Valid when probe_type == "intervention_module". Whether to train on positive-labeled samples only')
@@ -258,8 +252,12 @@ def main():
     elif args.probe_type == 'intervention_module' and not args.load_from_local:
         if args.dataset_name == 'dpo':
             hf_path = f'Lo-Fi-gahara/intervener_layer{args.layer}_{args.split_num}k_dpo'
-        train_loader, sample_size = build_hf_dataloader(hf_path, hf_batch_size=20)
-        print(f'\nTotal samples: ({sample_size})\nTotal batches: ({len(train_loader)})\n')
+            train_loader, sample_size = build_hf_dataloader(hf_path, hf_batch_size=20)
+            print(f'\nTotal samples: ({sample_size})\nTotal batches: ({len(train_loader)})\n')
+        elif args.dataset_name == 'math_shepherd':
+            _, others = load_math_shepherd(args.dataset_name, args.split_num, 8)  
+            nshot = others['nshot']
+
     else:
         raise ValueError(f'Arguments are not implemented - probe_type: [{args.probe_type}] and load_from_local: [{args.load_from_local}]')
     print(f'Time spent on loading dataset: {h_m_s(start_t)}')
