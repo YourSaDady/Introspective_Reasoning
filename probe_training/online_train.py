@@ -55,16 +55,19 @@ def main():
     n_shot = 8
     lr = 0.001
     epochs = 5
-    split_nums = [2, 3]
+    split_nums = [1, 2]
     max_samples = args.max_samples
     stat_prefix = f'./trained_probes/{args.dataset_name}/{args.model_name}_layer{args.layer}/{args.probe_type}'
-    prior_path = f'{stat_prefix}/intervener_test.pth'
-    probe_path = f'{stat_prefix}/intervener_3k.pth'
+    # prior_path = f'{stat_prefix}/intervener_test.pth'
+    prior_path = ''
+    # probe_path = f'{stat_prefix}/intervener_{len(split_nums)}k.pth'##############
+    probe_path = f'{stat_prefix}/intervener_test.pth'##############
     # prior_path = probe_path
     if not os.path.exists(stat_prefix):
         os.mkdir(stat_prefix)
         print(f'{stat_prefix} just created.')
-    training_stat_path = f'{stat_prefix}/running_losses_log_3k.jsonl' ##############
+    # training_stat_path = f'{stat_prefix}/running_losses_log_{len(split_nums)}k_test.jsonl' ##############
+    training_stat_path = f'{stat_prefix}/running_losses_log_test.jsonl' ##############
     #________________________
     start_t = time.time()
 
@@ -87,7 +90,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch.float16, device_map="auto")
     probe = InterventionModule(
         'lstm',
-        depth=3,
+        depth=4, ############
     )
     probe.to('cuda')
     print(f'\nInitialized probe\n')
@@ -143,7 +146,6 @@ def main():
                     raise NotImplementedError
                 with open(csv_path, newline='') as csvfile:
                     sample_count = 0
-                    step_count = 0
                     csvreader = csv.DictReader(csvfile)
                     for sample_id, row in enumerate(csvreader):
                         if max_samples != -1 and sample_id == (max_samples+n_shot):
@@ -230,7 +232,7 @@ def main():
                         sample_loss = 0.0
                         for itv_pos in range(intervene_range['start'], intervene_range['end']):
                             optimizer.zero_grad()
-                            itv_input = torch.cat([hiddens['posterior'][:, :(itv_pos-1), :], hiddens['prior'][:, itv_pos:itv_pos+1, :]], dim=1)
+                            itv_input = torch.cat([hiddens['posterior'][:, :itv_pos, :], hiddens['prior'][:, itv_pos:itv_pos+1, :]], dim=1)
                             itv_output = probe(itv_input)
                             assert itv_output.shape == itv_input.shape
                             # if itv_pos == intervene_range['start']+10:
@@ -246,14 +248,14 @@ def main():
                         sample_loss /= hiddens_len
                         # print(f'sample_loss after: {sample_loss}')
                         running_loss += sample_loss
-                        # if True:
-                        if (sample_id+1-n_shot) % 10 == 9:
-                            print(f'Epoch [{epoch+1}/{epochs}], Sample [{sample_id+1-n_shot}/{max_samples}], avg loss [{running_loss / (sample_id+1-n_shot):.5f}], last sample loss [{sample_loss:.5f}]')
+                        if True:
+                        # if (sample_id+1-n_shot) % 50 == 49:
+                            print(f'Epoch [{epoch+1}/{epochs}], Sample [{sample_count}/{max_samples}], avg loss [{running_loss / sample_count:.5f}], last sample loss [{sample_loss:.5f}]')
                             loss_stat = {
                                 'split': split_num,
                                 'epoch': epoch,
                                 'samples': sample_id,
-                                'loss': round(running_loss / (sample_id+1-n_shot), 4), 
+                                'loss': round(running_loss / sample_count, 4), 
                             }
                             statfile.write(json.dumps(loss_stat)+'\n')
                     #end of sample iter
