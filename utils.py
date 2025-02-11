@@ -200,7 +200,7 @@ def build_assistant_prompt(steps, curr_id, for_inference=False):
         history = ''
         for i, step in enumerate(steps[:curr_id]): #不包含当前step
             history += f'Step{i}: {step}\n'
-        return f'\nAnswer: \n{history}Step{curr_id}: ' #有后缀引导
+        return f'\nAnswer: \n{history}' #无后缀引导 （llama不理解）
     else:
         history = ''
         for i, step in enumerate(steps[:curr_id+1]): #包含当前step
@@ -410,7 +410,7 @@ import torch.optim as optim
 from tqdm import trange
 def online_training(dataset_name, tokenizer, collect_model, collector, probes, config, device='cuda', continue_=True): #False
     #______hyper params______
-    split_nums = [6, 7, 8]
+    split_nums = [1, 2]
     n_shot = config['n_shot']
     examples = config['examples']
     prefix_len = config['prefix_len']
@@ -429,12 +429,13 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
     #_________________________
 
     if continue_:
-        trained_probes_paths = [
-            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_5k.json',
-            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_5k.json',
-            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_5k.json',
-            './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json'
-        ]
+        # trained_probes_paths = [
+        #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_5k.json',
+        #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_5k.json',
+        #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_5k.json',
+        #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json'
+        # ]
+        trained_probes_paths = ['']*len(probes)
         for idx, probe_path in enumerate(trained_probes_paths):
             if os.path.exists(probe_path):
                 probes[idx].load_state_dict(probe_path)
@@ -452,7 +453,7 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
                 if max_samples != -1:
                     pbar = tqdm(total=max_samples, desc='sample')
                 assert len(type_2_idx) == len(probes)
-                print(f'\nmax_samples: {max_samples}\n')
+                # print(f'\nmax_samples: {max_samples}\n')
                 
                 running_losses = [0.0]*len(probes)
                 if dataset_name == 'math_shepherd':
@@ -601,7 +602,7 @@ def online_training(dataset_name, tokenizer, collect_model, collector, probes, c
     save the trained probes 
     '''
     for k, v in type_2_idx.items():
-        probe_path = f'{stat_prefix}/probe_{k}_8k.json'
+        probe_path = f'{stat_prefix}/probe_{k}_{len(split_nums)}k.json'
         stat_dict = probes[v].state_dict()
         with open(probe_path, 'w') as f:
             json.dump(stat_dict, f)

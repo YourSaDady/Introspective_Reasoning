@@ -1,0 +1,10 @@
+{"sample_id": 8, "step_id": 0, "Acc": {"-3": 1, "-2": 1, "-1": 1, "I+O": 0}, "step": "To find $p$ and $q$, I could try to factor the quadratic equation, but that might be messy. ", "label": "-", "question": "Let $p$ and $q$ be the two distinct solutions to the equation $$x^2 - 2x - 3 = 0.$$What is $(p + 1)(q + 1)$?"}
+{"sample_id": 8, "step_id": 1, "Acc": {"-3": 1, "-2": 1, "-1": 1, "I+O": 0}, "step": "Instead, I'll use the quadratic formula, which says that if $ax^2 + bx + c = 0$, then $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}.$$ ", "label": "-"}
+{"sample_id": 8, "step_id": 2, "Acc": {"-3": 1, "-2": 1, "-1": 1, "I+O": 0}, "step": "In this case, $a = 1$, $b = -2$, and $c = -3$, so I get $$x = \\frac{2 \\pm \\sqrt{4 + 12}}{2} = \\frac{2 \\pm \\sqrt{16}}{2} = \\frac{2 \\pm 4}{2} = 1 \\text{ or } -2.$$ ", "label": "-"}
+{"sample_id": 8, "step_id": 3, "Acc": {"-3": 1, "-2": 1, "-1": 1, "I+O": 0}, "step": "So $p = 1$ and $q = -2$, or vice versa. ", "label": "-"}
+{"sample_id": 8, "step_id": 4, "Acc": {"-3": 0, "-2": 1, "-1": 1, "I+O": 0}, "step": "Now I just need to plug these values into the expression $(p + 1)(q + 1)$. ", "label": "-"}
+{"sample_id": 8, "step_id": 5, "Acc": {"-2": 0, "-1": 1, "I+O": 0}, "step": "If $p = 1$ and $q = -2$, then $(p + 1)(q + 1) = (1 + 1)(-2 + 1) = 2 \\cdot -1 = -2$. ", "label": "-"}
+{"sample_id": 8, "step_id": 6, "Acc": {"-1": 0, "I+O": 0}, "step": "If $p = -2$ and $q = 1$, then $(p + 1)(q + 1) = (-2 + 1)(1 + 1) = -1 \\cdot 2 = -2$. ", "label": "-"}
+{"sample_id": 8, "step_id": 7, "Acc": {"I+O": 1}, "step": "Either way, I get the same answer", "label": "+", "answer": "-2"}
+
+{"-1": 85.71, "-2": 83.33, "-3": 80.0, "I+O": 12.5}

@@ -64,7 +64,9 @@ HF_NAMES = {
 def main(): 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default='llama3.1_8b_instruct')
-    parser.add_argument('--probe_path', type=str, default='./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_pos_ans.json') #./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O.json
+    parser.add_argument('--probe_type', type=str, required=True, help='choose from {linear, nonlinear, lstm}') #layers of lstm to be specified in the Classifier class
+    parser.add_argument('--aggregate_method', type=str, default='bow', help='required when probe_type is not lstm. Choose from {bow, mean, last}')
+    parser.add_argument('--probe_path', type=str, default='./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json: 75.27') #previous best: ./trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json: 75.27
     parser.add_argument('--dataset_name', type=str, default='math_shepherd')
     parser.add_argument('--layer', type=int, default=16)
     parser.add_argument('--split_num', type=int, default=3) #default: use the split3 for analysis, and split1 and 2 for prpbes training
@@ -80,12 +82,13 @@ def main():
     #___hyper params___
     sample_num = args.sample_num
     hiddens_range = [-1, -2, -3, 8848] #hiddens types
-    trained_probes_paths = [
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_5k.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_5k.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_5k.json',
-        './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json'
-    ]
+    # trained_probes_paths = [
+    #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-3_5k.json',
+    #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-2_5k.json',
+    #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_-1_5k.json',
+    #     './trained_probes/math_shepherd/llama3.1_8b_instruct_layer16/probe_I+O_5k.json'
+    # ]
+    trained_probes_paths = [''] * len(hiddens_range)
     #__________________
 
     #0. load dataset
@@ -107,12 +110,15 @@ def main():
     # print(model)
     # return ######################
 
+    probe_type = args.probe_type
+    aggregate_method = args.aggregate_method
     probes = []
     for _ in hiddens_range: #initialize probes
         probe = Classifier(
-            'lstm',
+            probe_type,
             hidden_size=4096,
             output_size=1,
+            aggregate_method=aggregate_method,
         )
         probe.to('cuda')
         probes.append(probe)
@@ -165,7 +171,7 @@ def main():
 
         Here we use the settings from FackCheckMate Table 2 by default
         '''
-        stat_path = f'./probing_survey/{args.model_name}_layer{args.layer}_{args.dataset_name}_split{args.split_num}_{args.sample_num}_probing_stat_{args.mode}.jsonl' ########
+        stat_path = f'./probing_survey/result/layer{args.layer}_{args.sample_num}samples_{args.mode}_{args.probe_type}_{args.aggregate_method}.jsonl' ########
         start_t = time.time()
         probbing_config = {
             'split_num': args.split_num,
@@ -180,7 +186,7 @@ def main():
         #1. train probes online or load trained stat_dicts
         if args.mode == 'specified' and args.online_training:
             training_config = probbing_config
-            training_config['stat_prefix'] = f'./trained_probes/{args.dataset_name}/{args.model_name}_layer{args.layer}'
+            training_config['stat_prefix'] = f'./trained_probes/{args.dataset_name}/{args.model_name}_layer{args.layer}/{args.probe_type}_{args.aggregate_method}'
             os.makedirs(training_config['stat_prefix'], exist_ok=True)
 
             trained_probes = online_training(args.dataset_name, tokenizer, collect_model, collector, probes, training_config)
