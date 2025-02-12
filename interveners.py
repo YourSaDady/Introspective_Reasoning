@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pyvene as pv
 
 def wrapper(intervener):
@@ -39,9 +40,32 @@ class Collector(pv.ConstantSourceIntervention):
             self.states.append(b[0, -1].reshape(32, -1)[self.head].detach().clone())  # original b is (batch_size, seq_len, #key_value_heads x D_head)
         return b
 
+
 '''
-wrapper for the intervention Module
+wrapper for intervention only.
 '''
+class PEFTIntervene(pv.ConstantSourceIntervention):
+    def __init__(self, intervener, **kwargs):
+        super().__init__(
+            **kwargs,
+            keep_last_dim=True,
+        )
+        self.called_counter = 0
+        self.intervener = intervener
+    
+    def reset(self):
+        self.called_counter = 0
+
+    def forward(self, base, source=None, subspaces=None):
+        self.called_counter += 1
+        last_token_hidden = base[:, -1:, :] #Size(1, 1, 4096)
+        intervened_last = self.intervener(last_token_hidden)[-1][-1] #Size(4096)
+        base[-1][-1] += F.normalize(intervened_last, p=2, dim=0)
+
+        return base
+
+
+
 class ClassifyIntervene(pv.ConstantSourceIntervention):
     def __init__(self, classifier, intervener, prefix_len, **kwargs):
         super().__init__(
